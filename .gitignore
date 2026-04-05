@@ -1,0 +1,21 @@
+# Dépendances (volumineuses, recréées via npm install)
+node_modules/
+
+# Build (recréé via npm run build)
+dist/
+
+# Variables d'environnement — NE JAMAIS committer
+.env
+.env.local
+.env.*.local
+candicator_nocommit.env
+
+# Clé compte de service Firebase — NE JAMAIS committer
+*.json
+!package.json
+!package-lock.json
+firebase*clé*
+firebase clé privée no commit
+
+# Système macOS
+.DS_Store

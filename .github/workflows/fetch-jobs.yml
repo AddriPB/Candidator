@@ -1,0 +1,39 @@
+name: Fetch Jobs
+
+on:
+  schedule:
+    # Tous les jours à 06h00 UTC = 07h00 Paris (heure d'hiver) / 08h00 (heure d'été)
+    - cron: '0 6 * * *'
+  # Permet de déclencher manuellement depuis l'onglet Actions de GitHub
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --omit=dev --ignore-scripts
+        env:
+          # On n'installe que firebase-admin et node-fetch pour le script
+          npm_config_omit: optional
+
+      - name: Install script dependencies
+        run: npm install firebase-admin node-fetch --no-save
+
+      - name: Run fetch jobs script
+        run: node scripts/fetch-jobs.js
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          FRANCE_TRAVAIL_CLIENT_ID: ${{ secrets.FRANCE_TRAVAIL_CLIENT_ID }}
+          FRANCE_TRAVAIL_CLIENT_SECRET: ${{ secrets.FRANCE_TRAVAIL_CLIENT_SECRET }}
+          ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
+          ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
