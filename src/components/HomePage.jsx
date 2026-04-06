@@ -46,6 +46,10 @@ export default function HomePage() {
   // Filtre niveau
   const [levelFilter, setLevelFilter] = useState('offers')
 
+  // Burger menu mobile
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const mobileMenuRef = useRef(null)
+
   // Gear dropdown — keywords API par utilisateur
   const [gearOpen, setGearOpen] = useState(false)
   const [apiKeywords, setApiKeywords] = useState('')
@@ -92,6 +96,25 @@ export default function HomePage() {
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [sourceDropOpen])
+
+  // Fermer le burger menu au clic extérieur
+  useEffect(() => {
+    if (!mobileMenuOpen) return
+    function handleClickOutside(e) {
+      if (mobileMenuRef.current && !mobileMenuRef.current.contains(e.target)) {
+        setMobileMenuOpen(false)
+      }
+    }
+    function handleKey(e) {
+      if (e.key === 'Escape') setMobileMenuOpen(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [mobileMenuOpen])
 
   // Fermer le gear panel au clic extérieur ou Escape
   useEffect(() => {
@@ -186,8 +209,8 @@ export default function HomePage() {
           )}
         </div>
 
-        <div className="header-right">
-          {/* Barre de recherche */}
+        {/* Barre de recherche — extraite pour occuper toute la largeur sur mobile */}
+        <div className="header-search">
           <div className="search-bar">
             <input
               className="search-input"
@@ -206,9 +229,11 @@ export default function HomePage() {
               <span className="btn-search-label">Rechercher</span>
             </button>
           </div>
+        </div>
 
-          {/* Gear — keywords API par utilisateur */}
-          <div className="gear-dropdown" ref={gearRef}>
+        <div className="header-right">
+          {/* Gear — desktop uniquement */}
+          <div className="gear-dropdown desktop-only" ref={gearRef}>
             <button
               className="btn-ghost btn-gear"
               onClick={() => setGearOpen((o) => !o)}
@@ -243,12 +268,53 @@ export default function HomePage() {
             )}
           </div>
 
-          <span className="header-workspace">
+          {/* Workspace + logout — desktop uniquement */}
+          <span className="header-workspace desktop-only">
             Espace : <strong>{workspaceName}</strong>
           </span>
-          <button className="btn-ghost" onClick={logout}>
+          <button className="btn-ghost desktop-only" onClick={logout}>
             Déconnexion
           </button>
+
+          {/* Burger — mobile uniquement */}
+          <div className="burger-dropdown" ref={mobileMenuRef}>
+            <button
+              className="btn-ghost btn-burger mobile-only"
+              onClick={() => setMobileMenuOpen((o) => !o)}
+              aria-label="Menu"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="3" y1="6" x2="21" y2="6"/>
+                <line x1="3" y1="12" x2="21" y2="12"/>
+                <line x1="3" y1="18" x2="21" y2="18"/>
+              </svg>
+            </button>
+            {mobileMenuOpen && (
+              <div className="mobile-menu">
+                <span className="mobile-menu-workspace">
+                  Espace : <strong>{workspaceName}</strong>
+                </span>
+                <div className="settings-field">
+                  <label>Mots-clés API</label>
+                  <input
+                    type="text"
+                    value={apiKeywords}
+                    onChange={(e) => setApiKeywords(e.target.value)}
+                    placeholder="Product Owner, Business Analyst"
+                  />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', marginTop: 8 }}>
+                  <button className="btn-save" onClick={handleSaveApiKeywords} disabled={gearSaving}>
+                    {gearSaving ? 'Enregistrement…' : 'Enregistrer'}
+                  </button>
+                  {gearSaved && <span className="settings-success">✓ Enregistré</span>}
+                </div>
+                <button className="btn-ghost btn-logout-mobile" onClick={logout}>
+                  Déconnexion
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -312,7 +378,7 @@ export default function HomePage() {
                 )}
               </div>
 
-              <div className="etat-pills">
+              <div className="etat-pills desktop-only">
                 {[['all', 'Toutes'], ['pending', 'En attente'], ['applied', 'Postulé']].map(([v, label]) => (
                   <button
                     key={v}
@@ -323,8 +389,16 @@ export default function HomePage() {
                   </button>
                 ))}
               </div>
+              <div className="filter-select-group mobile-only">
+                <label className="filter-select-label">État</label>
+                <select className="filter-select" value={etatFilter} onChange={(e) => setEtatFilter(e.target.value)}>
+                  <option value="all">Toutes</option>
+                  <option value="pending">En attente</option>
+                  <option value="applied">Postulé</option>
+                </select>
+              </div>
 
-              <div className="level-pills">
+              <div className="level-pills desktop-only">
                 {[
                   ['all', 'Toutes les offres'],
                   ['offers', 'Offres'],
@@ -340,6 +414,16 @@ export default function HomePage() {
                     {label}
                   </button>
                 ))}
+              </div>
+              <div className="filter-select-group mobile-only">
+                <label className="filter-select-label">Expérience</label>
+                <select className="filter-select" value={levelFilter} onChange={(e) => setLevelFilter(e.target.value)}>
+                  <option value="all">Toutes</option>
+                  <option value="offers">Offres</option>
+                  <option value="junior">Junior</option>
+                  <option value="senior">Senior</option>
+                  <option value="stage">Stage</option>
+                </select>
               </div>
             </div>
 
