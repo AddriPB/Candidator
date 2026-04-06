@@ -395,14 +395,35 @@ body {
 .mobile-menu-workspace {
   font-size: 0.875rem;
   color: var(--color-text-muted);
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--color-border);
 }
 
 .btn-logout-mobile {
   margin-top: 4px;
   width: 100%;
   justify-content: center;
+}
+
+.mobile-menu-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.mobile-menu-top-row .source-drop-wrapper {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.source-drop-right {
+  left: auto !important;
+  right: 0;
+}
+
+.btn-save-full {
+  width: 100%;
 }
 
 /* ── Selects filtres ── */
@@ -460,7 +481,7 @@ body {
 
   .app-main { padding: 20px 16px; }
 
-  .filter-bar { gap: 8px; }
+  .filter-bar { gap: 8px; flex-wrap: nowrap; }
 
   .job-card { padding: 14px; }
 }

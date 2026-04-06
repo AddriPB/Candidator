@@ -49,6 +49,7 @@ export default function HomePage() {
   // Burger menu mobile
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const mobileMenuRef = useRef(null)
+  const [mobileSourceDropOpen, setMobileSourceDropOpen] = useState(false)
 
   // Gear dropdown — keywords API par utilisateur
   const [gearOpen, setGearOpen] = useState(false)
@@ -96,6 +97,11 @@ export default function HomePage() {
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [sourceDropOpen])
+
+  // Fermer le source drop mobile quand le burger se ferme
+  useEffect(() => {
+    if (!mobileMenuOpen) setMobileSourceDropOpen(false)
+  }, [mobileMenuOpen])
 
   // Fermer le burger menu au clic extérieur
   useEffect(() => {
@@ -209,8 +215,8 @@ export default function HomePage() {
           )}
         </div>
 
-        {/* Barre de recherche — extraite pour occuper toute la largeur sur mobile */}
-        <div className="header-search">
+        {/* Barre de recherche — visible uniquement sur mobile (en desktop elle est dans filter-bar) */}
+        <div className="header-search mobile-only">
           <div className="search-bar">
             <input
               className="search-input"
@@ -291,9 +297,53 @@ export default function HomePage() {
             </button>
             {mobileMenuOpen && (
               <div className="mobile-menu">
-                <span className="mobile-menu-workspace">
-                  Espace : <strong>{workspaceName}</strong>
-                </span>
+                <div className="mobile-menu-top-row">
+                  <span className="mobile-menu-workspace">
+                    Espace : <strong>{workspaceName}</strong>
+                  </span>
+                  <div className="source-drop-wrapper">
+                    <button
+                      className="btn-filter-source"
+                      onClick={() => setMobileSourceDropOpen((o) => !o)}
+                    >
+                      Sources
+                      {selectedSources.size < ALL_SOURCES.length && ` (${selectedSources.size}/${ALL_SOURCES.length})`}
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <polyline points="6 9 12 15 18 9"/>
+                      </svg>
+                    </button>
+                    {mobileSourceDropOpen && (
+                      <div className="source-drop-panel source-drop-right">
+                        <label className="source-checkbox-row">
+                          <input
+                            type="checkbox"
+                            checked={selectedSources.size === ALL_SOURCES.length}
+                            onChange={() =>
+                              setSelectedSources(
+                                selectedSources.size === ALL_SOURCES.length ? new Set() : new Set(ALL_SOURCES)
+                              )
+                            }
+                          />
+                          Toutes les sources
+                        </label>
+                        {ALL_SOURCES.map((src) => (
+                          <label key={src} className="source-checkbox-row">
+                            <input
+                              type="checkbox"
+                              checked={selectedSources.has(src)}
+                              onChange={() => {
+                                const next = new Set(selectedSources)
+                                next.has(src) ? next.delete(src) : next.add(src)
+                                setSelectedSources(next)
+                              }}
+                            />
+                            {SOURCE_LABELS[src]}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
                 <div className="settings-field">
                   <label>Mots-clés API</label>
                   <input
@@ -303,8 +353,8 @@ export default function HomePage() {
                     placeholder="Product Owner, Business Analyst"
                   />
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', marginTop: 8 }}>
-                  <button className="btn-save" onClick={handleSaveApiKeywords} disabled={gearSaving}>
+                <div>
+                  <button className="btn-save btn-save-full" onClick={handleSaveApiKeywords} disabled={gearSaving}>
                     {gearSaving ? 'Enregistrement…' : 'Enregistrer'}
                   </button>
                   {gearSaved && <span className="settings-success">✓ Enregistré</span>}
@@ -335,7 +385,29 @@ export default function HomePage() {
           <>
             {/* Barre de filtres */}
             <div className="filter-bar">
-              <div className="source-drop-wrapper" ref={sourceDropRef}>
+              {/* Recherche — desktop uniquement (mobile : dans header-search) */}
+              <div className="desktop-only filter-bar-search">
+                <div className="search-bar">
+                  <input
+                    className="search-input"
+                    type="text"
+                    placeholder="Rechercher…"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                  />
+                  <button className="btn-search" onClick={handleSearch} aria-label="Rechercher">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                      stroke="currentColor" strokeWidth="2.5">
+                      <circle cx="11" cy="11" r="8" />
+                      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                    <span className="btn-search-label">Rechercher</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="source-drop-wrapper desktop-only" ref={sourceDropRef}>
                 <button
                   className="btn-filter-source"
                   onClick={() => setSourceDropOpen((o) => !o)}
