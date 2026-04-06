@@ -79,7 +79,7 @@ async function getFranceTravailToken() {
     grant_type: 'client_credentials',
     client_id: process.env.FRANCE_TRAVAIL_CLIENT_ID,
     client_secret: process.env.FRANCE_TRAVAIL_CLIENT_SECRET,
-    scope: 'api_offresdemploiv2 o2dsoffre',
+    scope: `api_offresdemploiv2 o2dsoffre application_${process.env.FRANCE_TRAVAIL_CLIENT_ID}`,
   })
   const res = await fetch(
     'https://entreprise.francetravail.fr/connexion/oauth2/access_token?realm=%2Fpartenaire',
