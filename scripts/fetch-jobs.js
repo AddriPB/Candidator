@@ -175,6 +175,7 @@ async function fetchJSearch(keyword) {
 
 // ── Careerjet API v4 ─────────────────────────────────────────────────────────
 async function fetchCareerjet(keyword) {
+  console.log(`Careerjet: appel pour "${keyword}" | affid=${process.env.CAREERJET_AFFILIATE_ID ? 'OK' : 'MANQUANT'}`)
   const params = new URLSearchParams({
     search: keyword,
     location: 'Ile de France',
