@@ -173,28 +173,37 @@ async function fetchJSearch(keyword) {
   }))
 }
 
-// ── Careerjet API (HelloWork, RegionsJob, Cadremploi…) ───────────────────────
+// ── Careerjet API v4 ─────────────────────────────────────────────────────────
 async function fetchCareerjet(keyword) {
   const params = new URLSearchParams({
-    keywords: keyword,
+    search: keyword,
     location: 'Ile de France',
-    affid: process.env.CAREERJET_AFFILIATE_ID,
     locale_code: 'fr_FR',
-    pagesize: '99',
     user_ip: '1.0.0.1',
     user_agent: 'Mozilla/5.0 (compatible; Candidator/1.0)',
   })
-  // Note : l'API publique Careerjet utilise HTTP (pas HTTPS)
-  const res = await fetch(`http://public.api.careerjet.net/search?${params}`)
+  const credentials = Buffer.from(`${process.env.CAREERJET_AFFILIATE_ID}:`).toString('base64')
+  let res
+  try {
+    res = await fetch(`https://search.api.careerjet.net/v4/query?${params}`, {
+      headers: {
+        Authorization: `Basic ${credentials}`,
+        Referer: 'https://addripb.github.io/Candidator/',
+      },
+    })
+  } catch (err) {
+    console.warn(`Careerjet "${keyword}" erreur réseau: ${err.message}`)
+    return []
+  }
   if (!res.ok) { console.warn(`Careerjet "${keyword}": ${res.status}`); return [] }
   const data = await res.json()
-  if (data.type === 'ERROR') { console.warn(`Careerjet "${keyword}" erreur: ${data.error ?? data.message}`); return [] }
+  if (data.type === 'ERROR') { console.warn(`Careerjet "${keyword}" erreur API: ${data.error ?? data.message}`); return [] }
   return (data.jobs ?? []).map((o) => ({
     title: o.title ?? 'Sans titre',
     company: o.company ?? 'Entreprise non communiquée',
     url: o.url ?? '',
     source: 'careerjet',
-    sourceId: o.url, // Careerjet n'expose pas d'ID stable — URL utilisée
+    sourceId: o.url,
   }))
 }
 
