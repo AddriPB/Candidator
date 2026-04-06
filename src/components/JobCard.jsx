@@ -38,6 +38,9 @@ export default function JobCard({ job, isApplied, onMarkApplied }) {
           {job.addedAt && (
             <span className="job-date">Ajouté le {formatDate(job.addedAt)}</span>
           )}
+          {job.salary && (
+            <span className="job-salary">{job.salary}</span>
+          )}
           {job.contactName && (
             <>
               <span className="job-contact-separator">·</span>

@@ -13,6 +13,14 @@ import { db } from '../firebase'
 import { useAuth } from '../contexts/AuthContext'
 import JobCard from './JobCard'
 
+const SOURCE_LABELS = {
+  france_travail: 'France Travail',
+  adzuna: 'Adzuna',
+  jsearch: 'LinkedIn / Indeed',
+  careerjet: 'Careerjet',
+}
+const ALL_SOURCES = Object.keys(SOURCE_LABELS)
+
 export default function HomePage() {
   const { workspaceName, logout } = useAuth()
 
@@ -26,6 +34,14 @@ export default function HomePage() {
   // Recherche client-side
   const [searchQuery, setSearchQuery] = useState('')
   const [activeSearch, setActiveSearch] = useState('')
+
+  // Filtre source
+  const [selectedSources, setSelectedSources] = useState(new Set(ALL_SOURCES))
+  const [sourceDropOpen, setSourceDropOpen] = useState(false)
+  const sourceDropRef = useRef(null)
+
+  // Filtre état
+  const [etatFilter, setEtatFilter] = useState('all')
 
   // Gear dropdown — keywords API par utilisateur
   const [gearOpen, setGearOpen] = useState(false)
@@ -58,6 +74,18 @@ export default function HomePage() {
     })
     return unsub
   }, [workspaceName])
+
+  // Fermer le source dropdown au clic extérieur
+  useEffect(() => {
+    if (!sourceDropOpen) return
+    function handleClickOutside(e) {
+      if (sourceDropRef.current && !sourceDropRef.current.contains(e.target)) {
+        setSourceDropOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [sourceDropOpen])
 
   // Fermer le gear panel au clic extérieur ou Escape
   useEffect(() => {
@@ -98,7 +126,7 @@ export default function HomePage() {
     setActiveSearch(searchQuery.trim())
   }
 
-  // Filtre client-side
+  // Filtres client-side
   function matchesSearch(job) {
     if (!activeSearch) return true
     const term = activeSearch.toLowerCase()
@@ -108,10 +136,15 @@ export default function HomePage() {
     )
   }
 
+  function matchesSource(job) {
+    if (selectedSources.size === 0 || selectedSources.size === ALL_SOURCES.length) return true
+    return selectedSources.has(job.source)
+  }
+
   const notApplied = jobs.filter((j) => !appliedJobIds.includes(j.id))
   const applied = jobs.filter((j) => appliedJobIds.includes(j.id))
-  const filteredNotApplied = notApplied.filter(matchesSearch)
-  const filteredApplied = applied.filter(matchesSearch)
+  const filteredNotApplied = notApplied.filter((j) => matchesSearch(j) && matchesSource(j))
+  const filteredApplied = applied.filter((j) => matchesSearch(j) && matchesSource(j))
 
   return (
     <div className="app-layout">
@@ -208,7 +241,65 @@ export default function HomePage() {
           </div>
         ) : (
           <>
-            {filteredNotApplied.length > 0 && (
+            {/* Barre de filtres */}
+            <div className="filter-bar">
+              <div className="source-drop-wrapper" ref={sourceDropRef}>
+                <button
+                  className="btn-filter-source"
+                  onClick={() => setSourceDropOpen((o) => !o)}
+                >
+                  Sources
+                  {selectedSources.size < ALL_SOURCES.length && ` (${selectedSources.size}/${ALL_SOURCES.length})`}
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    <polyline points="6 9 12 15 18 9"/>
+                  </svg>
+                </button>
+                {sourceDropOpen && (
+                  <div className="source-drop-panel">
+                    <label className="source-checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={selectedSources.size === ALL_SOURCES.length}
+                        onChange={() =>
+                          setSelectedSources(
+                            selectedSources.size === ALL_SOURCES.length ? new Set() : new Set(ALL_SOURCES)
+                          )
+                        }
+                      />
+                      Toutes les sources
+                    </label>
+                    {ALL_SOURCES.map((src) => (
+                      <label key={src} className="source-checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={selectedSources.has(src)}
+                          onChange={() => {
+                            const next = new Set(selectedSources)
+                            next.has(src) ? next.delete(src) : next.add(src)
+                            setSelectedSources(next)
+                          }}
+                        />
+                        {SOURCE_LABELS[src]}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="etat-pills">
+                {[['all', 'Toutes'], ['pending', 'En attente'], ['applied', 'Postulé']].map(([v, label]) => (
+                  <button
+                    key={v}
+                    className={`pill${etatFilter === v ? ' pill-active' : ''}`}
+                    onClick={() => setEtatFilter(v)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {(etatFilter === 'all' || etatFilter === 'pending') && filteredNotApplied.length > 0 && (
               <>
                 <div className="jobs-section-title">
                   À candidater ({filteredNotApplied.length})
@@ -226,7 +317,7 @@ export default function HomePage() {
               </>
             )}
 
-            {filteredApplied.length > 0 && (
+            {(etatFilter === 'all' || etatFilter === 'applied') && filteredApplied.length > 0 && (
               <>
                 <div className="jobs-section-title">
                   Déjà postulé ({filteredApplied.length})
@@ -244,10 +335,10 @@ export default function HomePage() {
               </>
             )}
 
-            {activeSearch && filteredNotApplied.length === 0 && filteredApplied.length === 0 && (
+            {filteredNotApplied.length === 0 && filteredApplied.length === 0 && (
               <div className="jobs-empty">
-                <p>Aucun résultat pour « {activeSearch} »</p>
-                <p>Essayez un autre mot-clé ou videz le champ pour afficher toutes les offres.</p>
+                <p>Aucun résultat</p>
+                <p>Essayez de modifier les filtres ou la recherche.</p>
               </div>
             )}
           </>

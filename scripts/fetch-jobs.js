@@ -111,6 +111,7 @@ async function fetchFranceTravail(keyword, token) {
       source: 'france_travail',
       sourceId: o.id,
     }
+    if (o.salaire?.libelle) job.salary = o.salaire.libelle
     const contactName = [contact.prenom, contact.nom].filter(Boolean).join(' ')
     if (contactName) job.contactName = contactName
     if (contact.telephone) job.contactPhone = contact.telephone
@@ -134,13 +135,25 @@ async function fetchAdzuna(keyword) {
   )
   if (!res.ok) { console.warn(`Adzuna "${keyword}": ${res.status}`); return [] }
   const data = await res.json()
-  return (data.results ?? []).map((o) => ({
-    title: o.title ?? 'Sans titre',
-    company: o.company?.display_name ?? 'Entreprise non communiquée',
-    url: o.redirect_url ?? '',
-    source: 'adzuna',
-    sourceId: String(o.id),
-  }))
+  return (data.results ?? []).map((o) => {
+    const min = o.salary_min, max = o.salary_max
+    let salary = null
+    if (min || max) {
+      const fmt = (v) => `${Math.round(v / 1000)}k€`
+      if (min && max) salary = `${fmt(min)} – ${fmt(max)}/an`
+      else if (min) salary = `à partir de ${fmt(min)}/an`
+      else salary = `jusqu'à ${fmt(max)}/an`
+    }
+    const job = {
+      title: o.title ?? 'Sans titre',
+      company: o.company?.display_name ?? 'Entreprise non communiquée',
+      url: o.redirect_url ?? '',
+      source: 'adzuna',
+      sourceId: String(o.id),
+    }
+    if (salary) job.salary = salary
+    return job
+  })
 }
 
 // ── JSearch API (LinkedIn + Indeed + Glassdoor via RapidAPI) ─────────────────
@@ -164,13 +177,27 @@ async function fetchJSearch(keyword) {
   )
   if (!res.ok) { console.warn(`JSearch "${keyword}": ${res.status}`); return [] }
   const data = await res.json()
-  return (data.data ?? []).map((o) => ({
-    title: o.job_title ?? 'Sans titre',
-    company: o.employer_name ?? 'Entreprise non communiquée',
-    url: o.job_apply_link ?? '',
-    source: 'jsearch',
-    sourceId: o.job_id,
-  }))
+  return (data.data ?? []).map((o) => {
+    const min = o.job_min_salary, max = o.job_max_salary
+    let salary = null
+    if (min || max) {
+      const sym = o.job_salary_currency === 'EUR' ? '€' : (o.job_salary_currency ?? '€')
+      const per = o.job_salary_period === 'YEAR' ? '/an' : o.job_salary_period === 'MONTH' ? '/mois' : ''
+      const fmt = (v) => v >= 1000 ? `${Math.round(v / 1000)}k${sym}` : `${Math.round(v)}${sym}`
+      if (min && max) salary = `${fmt(min)} – ${fmt(max)}${per}`
+      else if (min) salary = `à partir de ${fmt(min)}${per}`
+      else salary = `jusqu'à ${fmt(max)}${per}`
+    }
+    const job = {
+      title: o.job_title ?? 'Sans titre',
+      company: o.employer_name ?? 'Entreprise non communiquée',
+      url: o.job_apply_link ?? '',
+      source: 'jsearch',
+      sourceId: o.job_id,
+    }
+    if (salary) job.salary = salary
+    return job
+  })
 }
 
 // ── Careerjet API v4 ─────────────────────────────────────────────────────────
@@ -187,7 +214,9 @@ async function fetchCareerjet(keyword) {
   })
   let res
   try {
-    res = await fetch(`http://public.api.careerjet.net/search?${params}`)
+    res = await fetch(`http://public.api.careerjet.net/search?${params}`, {
+      headers: { Referer: 'https://addripb.github.io/' },
+    })
   } catch (err) {
     console.warn(`Careerjet "${keyword}" erreur réseau: ${err.message}`)
     return []
