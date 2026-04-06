@@ -188,6 +188,7 @@ async function fetchCareerjet(keyword) {
   const res = await fetch(`http://public.api.careerjet.net/search?${params}`)
   if (!res.ok) { console.warn(`Careerjet "${keyword}": ${res.status}`); return [] }
   const data = await res.json()
+  if (data.type === 'ERROR') { console.warn(`Careerjet "${keyword}" erreur: ${data.error ?? data.message}`); return [] }
   return (data.jobs ?? []).map((o) => ({
     title: o.title ?? 'Sans titre',
     company: o.company ?? 'Entreprise non communiquée',
