@@ -197,6 +197,7 @@ async function fetchCareerjet(keyword) {
   }
   if (!res.ok) { console.warn(`Careerjet "${keyword}": ${res.status}`); return [] }
   const data = await res.json()
+  console.log(`Careerjet debug keys: ${Object.keys(data).join(', ')} | type: ${data.type} | jobs: ${data.jobs?.length ?? 'undefined'}`)
   if (data.type === 'ERROR') { console.warn(`Careerjet "${keyword}" erreur API: ${data.error ?? data.message}`); return [] }
   return (data.jobs ?? []).map((o) => ({
     title: o.title ?? 'Sans titre',
