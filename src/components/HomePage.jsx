@@ -1,11 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   collection,
   query,
   orderBy,
   onSnapshot,
   doc,
-  getDoc,
   setDoc,
   updateDoc,
   arrayUnion,
@@ -24,12 +23,16 @@ export default function HomePage() {
   // Offres postulées
   const [appliedJobIds, setAppliedJobIds] = useState([])
 
-  // Settings
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [keywords, setKeywords] = useState('')
-  const [location, setLocation] = useState('')
-  const [settingsSaving, setSettingsSaving] = useState(false)
-  const [settingsSaved, setSettingsSaved] = useState(false)
+  // Recherche client-side
+  const [searchQuery, setSearchQuery] = useState('')
+  const [activeSearch, setActiveSearch] = useState('')
+
+  // Gear dropdown — keywords API par utilisateur
+  const [gearOpen, setGearOpen] = useState(false)
+  const [apiKeywords, setApiKeywords] = useState('')
+  const [gearSaving, setGearSaving] = useState(false)
+  const [gearSaved, setGearSaved] = useState(false)
+  const gearRef = useRef(null)
 
   // Charger les offres en temps réel
   useEffect(() => {
@@ -41,55 +44,74 @@ export default function HomePage() {
     return unsub
   }, [])
 
-  // Charger le profil utilisateur (offres postulées)
+  // Charger le profil utilisateur (offres postulées + keywords API)
   useEffect(() => {
     if (!workspaceName) return
     const userRef = doc(db, 'users', workspaceName)
     const unsub = onSnapshot(userRef, (snap) => {
       if (snap.exists()) {
         setAppliedJobIds(snap.data().appliedJobIds ?? [])
+        setApiKeywords((snap.data().searchKeywords ?? []).join(', '))
       } else {
-        // Créer le document utilisateur s'il n'existe pas
-        setDoc(userRef, { appliedJobIds: [] })
+        setDoc(userRef, { appliedJobIds: [], searchKeywords: [] })
       }
     })
     return unsub
   }, [workspaceName])
 
-  // Charger les paramètres de recherche
+  // Fermer le gear panel au clic extérieur ou Escape
   useEffect(() => {
-    const configRef = doc(db, 'config', 'search_params')
-    getDoc(configRef).then((snap) => {
-      if (snap.exists()) {
-        const data = snap.data()
-        setKeywords((data.keywords ?? []).join(', '))
-        setLocation(data.location ?? '')
+    if (!gearOpen) return
+    function handleClickOutside(e) {
+      if (gearRef.current && !gearRef.current.contains(e.target)) {
+        setGearOpen(false)
       }
-    })
-  }, [])
+    }
+    function handleKey(e) {
+      if (e.key === 'Escape') setGearOpen(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [gearOpen])
 
   async function handleMarkApplied(jobId) {
     const userRef = doc(db, 'users', workspaceName)
     await updateDoc(userRef, { appliedJobIds: arrayUnion(jobId) })
   }
 
-  async function handleSaveSettings() {
-    setSettingsSaving(true)
-    setSettingsSaved(false)
-    const configRef = doc(db, 'config', 'search_params')
-    const keywordsList = keywords
-      .split(',')
-      .map((k) => k.trim())
-      .filter(Boolean)
-    await setDoc(configRef, { keywords: keywordsList, location: location.trim() })
-    setSettingsSaving(false)
-    setSettingsSaved(true)
-    setTimeout(() => setSettingsSaved(false), 3000)
+  async function handleSaveApiKeywords() {
+    setGearSaving(true)
+    setGearSaved(false)
+    const userRef = doc(db, 'users', workspaceName)
+    const keywordsList = apiKeywords.split(',').map((k) => k.trim()).filter(Boolean)
+    await setDoc(userRef, { searchKeywords: keywordsList }, { merge: true })
+    setGearSaving(false)
+    setGearSaved(true)
+    setTimeout(() => setGearSaved(false), 3000)
   }
 
-  // Tri : non postulé en premier, puis par date décroissante (déjà ordonnée par Firestore)
+  function handleSearch() {
+    setActiveSearch(searchQuery.trim())
+  }
+
+  // Filtre client-side
+  function matchesSearch(job) {
+    if (!activeSearch) return true
+    const term = activeSearch.toLowerCase()
+    return (
+      job.title?.toLowerCase().includes(term) ||
+      job.company?.toLowerCase().includes(term)
+    )
+  }
+
   const notApplied = jobs.filter((j) => !appliedJobIds.includes(j.id))
   const applied = jobs.filter((j) => appliedJobIds.includes(j.id))
+  const filteredNotApplied = notApplied.filter(matchesSearch)
+  const filteredApplied = applied.filter(matchesSearch)
 
   return (
     <div className="app-layout">
@@ -98,11 +120,70 @@ export default function HomePage() {
           <span className="app-logo">Candidator</span>
           {!jobsLoading && (
             <span className="header-count">
-              {notApplied.length} offre{notApplied.length !== 1 ? 's' : ''} en attente
+              {activeSearch
+                ? `${filteredNotApplied.length} résultat${filteredNotApplied.length !== 1 ? 's' : ''}`
+                : `${notApplied.length} offre${notApplied.length !== 1 ? 's' : ''} en attente`}
             </span>
           )}
         </div>
+
         <div className="header-right">
+          {/* Barre de recherche */}
+          <div className="search-bar">
+            <input
+              className="search-input"
+              type="text"
+              placeholder="Rechercher…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+            />
+            <button className="btn-search" onClick={handleSearch} aria-label="Rechercher">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2.5">
+                <circle cx="11" cy="11" r="8" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+              <span className="btn-search-label">Rechercher</span>
+            </button>
+          </div>
+
+          {/* Gear — keywords API par utilisateur */}
+          <div className="gear-dropdown" ref={gearRef}>
+            <button
+              className="btn-ghost btn-gear"
+              onClick={() => setGearOpen((o) => !o)}
+              aria-label="Paramètres"
+            >
+              ⚙
+            </button>
+            {gearOpen && (
+              <div className="gear-panel">
+                <div className="settings-field">
+                  <label>Mots-clés API</label>
+                  <input
+                    type="text"
+                    value={apiKeywords}
+                    onChange={(e) => setApiKeywords(e.target.value)}
+                    placeholder="Product Owner, Business Analyst"
+                  />
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', marginTop: 12 }}>
+                  <button
+                    className="btn-save"
+                    onClick={handleSaveApiKeywords}
+                    disabled={gearSaving}
+                  >
+                    {gearSaving ? 'Enregistrement…' : 'Enregistrer'}
+                  </button>
+                  {gearSaved && (
+                    <span className="settings-success">✓ Enregistré</span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
           <span className="header-workspace">
             Espace : <strong>{workspaceName}</strong>
           </span>
@@ -113,54 +194,6 @@ export default function HomePage() {
       </header>
 
       <main className="app-main">
-        {/* Settings */}
-        <div className="settings-panel">
-          <button
-            className="settings-toggle"
-            onClick={() => setSettingsOpen((o) => !o)}
-          >
-            <span>Paramètres de recherche</span>
-            <span className={`settings-toggle-icon${settingsOpen ? ' open' : ''}`}>▼</span>
-          </button>
-
-          {settingsOpen && (
-            <div className="settings-body">
-              <div className="settings-field">
-                <label>Mots-clés de recherche</label>
-                <input
-                  type="text"
-                  value={keywords}
-                  onChange={(e) => setKeywords(e.target.value)}
-                  placeholder="Product Owner, Business Analyst"
-                />
-                <span className="settings-hint">Séparer par des virgules</span>
-              </div>
-              <div className="settings-field">
-                <label>Localisation</label>
-                <input
-                  type="text"
-                  value={location}
-                  onChange={(e) => setLocation(e.target.value)}
-                  placeholder="Île-de-France"
-                />
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center' }}>
-                <button
-                  className="btn-save"
-                  onClick={handleSaveSettings}
-                  disabled={settingsSaving}
-                >
-                  {settingsSaving ? 'Enregistrement…' : 'Enregistrer'}
-                </button>
-                {settingsSaved && (
-                  <span className="settings-success">✓ Enregistré</span>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Liste des offres */}
         {jobsLoading ? (
           <div className="jobs-empty">
             <p>Chargement des offres…</p>
@@ -169,19 +202,19 @@ export default function HomePage() {
           <div className="jobs-empty">
             <p>Aucune offre pour le moment</p>
             <p>
-              Les offres seront ajoutées automatiquement chaque jour à 7h.
+              Les offres sont ajoutées automatiquement chaque jour à 7h.
               Vous pouvez aussi déclencher manuellement le workflow GitHub Actions.
             </p>
           </div>
         ) : (
           <>
-            {notApplied.length > 0 && (
+            {filteredNotApplied.length > 0 && (
               <>
                 <div className="jobs-section-title">
-                  À candidater ({notApplied.length})
+                  À candidater ({filteredNotApplied.length})
                 </div>
                 <div className="jobs-list">
-                  {notApplied.map((job) => (
+                  {filteredNotApplied.map((job) => (
                     <JobCard
                       key={job.id}
                       job={job}
@@ -193,13 +226,13 @@ export default function HomePage() {
               </>
             )}
 
-            {applied.length > 0 && (
+            {filteredApplied.length > 0 && (
               <>
                 <div className="jobs-section-title">
-                  Déjà postulé ({applied.length})
+                  Déjà postulé ({filteredApplied.length})
                 </div>
                 <div className="jobs-list">
-                  {applied.map((job) => (
+                  {filteredApplied.map((job) => (
                     <JobCard
                       key={job.id}
                       job={job}
@@ -209,6 +242,13 @@ export default function HomePage() {
                   ))}
                 </div>
               </>
+            )}
+
+            {activeSearch && filteredNotApplied.length === 0 && filteredApplied.length === 0 && (
+              <div className="jobs-empty">
+                <p>Aucun résultat pour « {activeSearch} »</p>
+                <p>Essayez un autre mot-clé ou videz le champ pour afficher toutes les offres.</p>
+              </div>
             )}
           </>
         )}

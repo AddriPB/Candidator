@@ -17,5 +17,8 @@ candicator_nocommit.env
 firebase*clé*
 firebase clé privée no commit
 
+# Documentation locale uniquement
+SETUP.txt
+
 # Système macOS
 .DS_Store

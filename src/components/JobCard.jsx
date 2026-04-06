@@ -9,6 +9,8 @@ function formatDate(timestamp) {
 const SOURCE_LABELS = {
   france_travail: 'France Travail',
   adzuna: 'Adzuna',
+  jsearch: 'LinkedIn / Indeed',
+  careerjet: 'Careerjet',
 }
 
 export default function JobCard({ job, isApplied, onMarkApplied }) {

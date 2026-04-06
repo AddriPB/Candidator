@@ -245,35 +245,6 @@ body {
   overflow: hidden;
 }
 
-.settings-toggle {
-  width: 100%;
-  background: none;
-  border: none;
-  padding: 14px 20px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  cursor: pointer;
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--color-text-muted);
-  text-align: left;
-  transition: background 0.15s;
-}
-
-.settings-toggle:hover {
-  background: var(--color-bg);
-}
-
-.settings-toggle-icon {
-  font-size: 0.75rem;
-  transition: transform 0.2s;
-}
-
-.settings-toggle-icon.open {
-  transform: rotate(180deg);
-}
-
 .settings-body {
   padding: 20px;
   border-top: 1px solid var(--color-border);
@@ -312,12 +283,6 @@ body {
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
 }
 
-.settings-hint {
-  font-size: 0.75rem;
-  color: var(--color-text-muted);
-  margin-top: 2px;
-}
-
 .btn-save {
   background: var(--color-primary);
   color: #fff;
@@ -344,6 +309,78 @@ body {
   font-size: 0.8125rem;
   color: var(--color-success);
   margin-left: 8px;
+}
+
+/* ── Search Bar ── */
+.search-bar {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--color-surface);
+}
+
+.search-input {
+  border: none;
+  outline: none;
+  padding: 7px 12px;
+  font-size: 0.875rem;
+  color: var(--color-text);
+  background: transparent;
+  width: 220px;
+}
+
+.search-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.btn-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--color-primary);
+  color: #fff;
+  border: none;
+  padding: 7px 14px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.btn-search:hover {
+  background: var(--color-primary-hover);
+}
+
+@media (max-width: 600px) {
+  .btn-search-label { display: none; }
+  .search-input { width: 140px; }
+}
+
+/* ── Gear Dropdown ── */
+.gear-dropdown {
+  position: relative;
+}
+
+.btn-gear {
+  font-size: 1rem;
+  padding: 6px 10px;
+  line-height: 1;
+}
+
+.gear-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  padding: 16px;
+  width: 320px;
+  z-index: 100;
 }
 
 /* ── Jobs Section ── */

@@ -1,17 +1,16 @@
 /**
  * fetch-jobs.js
  * Script Node.js exécuté quotidiennement par GitHub Actions.
- * Récupère les offres d'emploi depuis France Travail et Adzuna,
- * déduplique et écrit dans Firestore.
+ * Sources : France Travail, Adzuna, JSearch (LinkedIn/Indeed), Careerjet
+ * Keywords : lus depuis chaque document /users/ dans Firestore (par utilisateur)
+ * Filtre : seuls les titres correspondant aux rôles PO/PM/BA sont conservés
  *
- * Usage : node scripts/fetch-jobs.js
- * Variables d'environnement requises (GitHub Secrets) :
- *   FIREBASE_SERVICE_ACCOUNT  — JSON du compte de service Firebase (minifié)
- *   FRANCE_TRAVAIL_CLIENT_ID
- *   FRANCE_TRAVAIL_CLIENT_SECRET
- *   ADZUNA_APP_ID
- *   ADZUNA_APP_KEY
- *   VITE_FIREBASE_PROJECT_ID  — project ID Firebase
+ * Secrets GitHub requis :
+ *   FIREBASE_SERVICE_ACCOUNT
+ *   FRANCE_TRAVAIL_CLIENT_ID / FRANCE_TRAVAIL_CLIENT_SECRET
+ *   ADZUNA_APP_ID / ADZUNA_APP_KEY
+ *   RAPIDAPI_KEY
+ *   CAREERJET_AFFILIATE_ID
  */
 
 import { createHash } from 'crypto'
@@ -22,6 +21,20 @@ import { getFirestore, Timestamp } from 'firebase-admin/firestore'
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
 initializeApp({ credential: cert(serviceAccount) })
 const db = getFirestore()
+
+// ── Filtre de titre ──────────────────────────────────────────────────────────
+const TITLE_FILTERS = [
+  /\bproduct\s*owner\b/i,
+  /\bP\.?O\.?\b/i,
+  /\bproduct\s*manager\b/i,
+  /\bP\.?M\.?\b/i,
+  /\bbusiness\s*analyst\b/i,
+  /\bB\.?A\.?\b/i,
+]
+
+function matchesRoleFilter(title) {
+  return TITLE_FILTERS.some((re) => re.test(title))
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function makeJobId(source, sourceId) {
@@ -43,57 +56,53 @@ async function saveJob(job) {
   return true
 }
 
-// ── Lire les paramètres de recherche depuis Firestore ────────────────────────
-async function getSearchParams() {
-  const snap = await db.collection('config').doc('search_params').get()
-  if (snap.exists) {
-    return {
-      keywords: snap.data().keywords ?? ['Product Owner', 'Business Analyst'],
-      location: snap.data().location ?? 'Île-de-France',
+// ── Lire les keywords depuis tous les docs /users/ ───────────────────────────
+async function getAllUserKeywords() {
+  const snap = await db.collection('users').get()
+  const keywordSet = new Set()
+  for (const userDoc of snap.docs) {
+    for (const kw of (userDoc.data().searchKeywords ?? [])) {
+      if (kw.trim()) keywordSet.add(kw.trim())
     }
   }
-  return { keywords: ['Product Owner', 'Business Analyst'], location: 'Île-de-France' }
+  // Fallback si aucun utilisateur n'a configuré de keywords
+  if (keywordSet.size === 0) {
+    console.log('Aucun keyword configuré — utilisation des valeurs par défaut')
+    return ['Product Owner', 'Business Analyst', 'Product Manager']
+  }
+  return [...keywordSet]
 }
 
 // ── France Travail API ───────────────────────────────────────────────────────
 async function getFranceTravailToken() {
-  const clientId = process.env.FRANCE_TRAVAIL_CLIENT_ID
-  const clientSecret = process.env.FRANCE_TRAVAIL_CLIENT_SECRET
   const body = new URLSearchParams({
     grant_type: 'client_credentials',
-    client_id: clientId,
-    client_secret: clientSecret,
+    client_id: process.env.FRANCE_TRAVAIL_CLIENT_ID,
+    client_secret: process.env.FRANCE_TRAVAIL_CLIENT_SECRET,
     scope: 'api_offresdemploiv2 o2dsoffre',
   })
-  const res = await fetch('https://entreprise.francetravail.fr/connexion/oauth2/access_token?realm=%2Fpartenaire', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  })
+  const res = await fetch(
+    'https://entreprise.francetravail.fr/connexion/oauth2/access_token?realm=%2Fpartenaire',
+    { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body }
+  )
   if (!res.ok) throw new Error(`France Travail auth failed: ${res.status}`)
-  const data = await res.json()
-  return data.access_token
+  return (await res.json()).access_token
 }
 
 async function fetchFranceTravail(keyword, token) {
-  // Région Île-de-France = code 11
   const params = new URLSearchParams({
     motsCles: keyword,
-    region: '11',
+    region: '11', // Île-de-France
     range: '0-149',
-    sort: '1',           // Tri par date
+    sort: '1',
   })
   const res = await fetch(
     `https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search?${params}`,
     { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } }
   )
-  if (!res.ok) {
-    console.warn(`France Travail fetch failed for "${keyword}": ${res.status}`)
-    return []
-  }
+  if (!res.ok) { console.warn(`France Travail "${keyword}": ${res.status}`); return [] }
   const data = await res.json()
-  const offres = data.resultats ?? []
-  return offres.map((o) => {
+  return (data.resultats ?? []).map((o) => {
     const contact = o.contact ?? {}
     const job = {
       title: o.intitule ?? 'Sans titre',
@@ -111,11 +120,9 @@ async function fetchFranceTravail(keyword, token) {
 
 // ── Adzuna API ───────────────────────────────────────────────────────────────
 async function fetchAdzuna(keyword) {
-  const appId = process.env.ADZUNA_APP_ID
-  const appKey = process.env.ADZUNA_APP_KEY
   const params = new URLSearchParams({
-    app_id: appId,
-    app_key: appKey,
+    app_id: process.env.ADZUNA_APP_ID,
+    app_key: process.env.ADZUNA_APP_KEY,
     results_per_page: '50',
     what: keyword,
     where: 'Ile-de-France',
@@ -125,13 +132,9 @@ async function fetchAdzuna(keyword) {
     `https://api.adzuna.com/v1/api/jobs/fr/search/1?${params}`,
     { headers: { Accept: 'application/json' } }
   )
-  if (!res.ok) {
-    console.warn(`Adzuna fetch failed for "${keyword}": ${res.status}`)
-    return []
-  }
+  if (!res.ok) { console.warn(`Adzuna "${keyword}": ${res.status}`); return [] }
   const data = await res.json()
-  const results = data.results ?? []
-  return results.map((o) => ({
+  return (data.results ?? []).map((o) => ({
     title: o.title ?? 'Sans titre',
     company: o.company?.display_name ?? 'Entreprise non communiquée',
     url: o.redirect_url ?? '',
@@ -140,40 +143,89 @@ async function fetchAdzuna(keyword) {
   }))
 }
 
+// ── JSearch API (LinkedIn + Indeed + Glassdoor via RapidAPI) ─────────────────
+async function fetchJSearch(keyword) {
+  const params = new URLSearchParams({
+    query: `${keyword} Île-de-France`,
+    page: '1',
+    num_pages: '2',
+    date_posted: 'week',
+    country: 'fr',
+  })
+  const res = await fetch(
+    `https://jsearch.p.rapidapi.com/search?${params}`,
+    {
+      headers: {
+        'X-RapidAPI-Key': process.env.RAPIDAPI_KEY,
+        'X-RapidAPI-Host': 'jsearch.p.rapidapi.com',
+        Accept: 'application/json',
+      },
+    }
+  )
+  if (!res.ok) { console.warn(`JSearch "${keyword}": ${res.status}`); return [] }
+  const data = await res.json()
+  return (data.data ?? []).map((o) => ({
+    title: o.job_title ?? 'Sans titre',
+    company: o.employer_name ?? 'Entreprise non communiquée',
+    url: o.job_apply_link ?? '',
+    source: 'jsearch',
+    sourceId: o.job_id,
+  }))
+}
+
+// ── Careerjet API (HelloWork, RegionsJob, Cadremploi…) ───────────────────────
+async function fetchCareerjet(keyword) {
+  const params = new URLSearchParams({
+    keywords: keyword,
+    location: 'Ile de France',
+    affid: process.env.CAREERJET_AFFILIATE_ID,
+    locale_code: 'fr_FR',
+    pagesize: '99',
+  })
+  // Note : l'API publique Careerjet utilise HTTP (pas HTTPS)
+  const res = await fetch(`http://public.api.careerjet.net/search?${params}`)
+  if (!res.ok) { console.warn(`Careerjet "${keyword}": ${res.status}`); return [] }
+  const data = await res.json()
+  return (data.jobs ?? []).map((o) => ({
+    title: o.title ?? 'Sans titre',
+    company: o.company ?? 'Entreprise non communiquée',
+    url: o.url ?? '',
+    source: 'careerjet',
+    sourceId: o.url, // Careerjet n'expose pas d'ID stable — URL utilisée
+  }))
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
   console.log('=== Candidator — Fetch Jobs ===')
-  const { keywords } = await getSearchParams()
+  const keywords = await getAllUserKeywords()
   console.log(`Mots-clés : ${keywords.join(', ')}`)
-  console.log('Zone : Île-de-France (région 11)')
+  console.log('Zone : Île-de-France')
 
   let totalNew = 0
 
-  // France Travail
+  // Token France Travail (partagé pour tous les keywords)
   let ftToken
   try {
     ftToken = await getFranceTravailToken()
-    console.log('France Travail : token obtenu')
+    console.log('France Travail : token obtenu ✓')
   } catch (err) {
     console.error('France Travail auth error:', err.message)
   }
 
-  if (ftToken) {
-    for (const keyword of keywords) {
-      const offers = await fetchFranceTravail(keyword, ftToken)
-      console.log(`France Travail "${keyword}" : ${offers.length} offres récupérées`)
-      for (const job of offers) {
-        const saved = await saveJob(job)
-        if (saved) totalNew++
-      }
-    }
-  }
-
-  // Adzuna
   for (const keyword of keywords) {
-    const offers = await fetchAdzuna(keyword)
-    console.log(`Adzuna "${keyword}" : ${offers.length} offres récupérées`)
-    for (const job of offers) {
+    console.log(`\n--- "${keyword}" ---`)
+    const all = []
+
+    if (ftToken) all.push(...await fetchFranceTravail(keyword, ftToken))
+    all.push(...await fetchAdzuna(keyword))
+    all.push(...await fetchJSearch(keyword))
+    all.push(...await fetchCareerjet(keyword))
+
+    const filtered = all.filter((job) => matchesRoleFilter(job.title))
+    console.log(`${all.length} offres brutes → ${filtered.length} après filtre titre`)
+
+    for (const job of filtered) {
       const saved = await saveJob(job)
       if (saved) totalNew++
     }
