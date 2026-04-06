@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app'
 import { getAuth } from 'firebase/auth'
-import { getFirestore } from 'firebase/firestore'
+import { initializeFirestore, persistentLocalCache } from 'firebase/firestore'
 
 // Configuration Firebase — copier les valeurs depuis Firebase Console
 // Project Settings → Your apps → Web app → Config
@@ -16,4 +16,5 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig)
 
 export const auth = getAuth(app)
-export const db = getFirestore(app)
+// Cache IndexedDB : les offres déjà chargées ne sont pas re-lues depuis le réseau
+export const db = initializeFirestore(app, { localCache: persistentLocalCache() })

@@ -41,19 +41,19 @@ function makeJobId(source, sourceId) {
   return createHash('sha1').update(`${source}_${sourceId}`).digest('hex').slice(0, 20)
 }
 
-async function jobExists(jobId) {
-  const snap = await db.collection('jobs').doc(jobId).get()
-  return snap.exists
-}
-
 async function saveJob(job) {
   const jobId = makeJobId(job.source, job.sourceId)
-  if (await jobExists(jobId)) return false
-  await db.collection('jobs').doc(jobId).set({
-    ...job,
-    addedAt: Timestamp.now(),
-  })
-  return true
+  try {
+    // create() échoue avec ALREADY_EXISTS si le doc existe — 0 lecture consommée
+    await db.collection('jobs').doc(jobId).create({
+      ...job,
+      addedAt: Timestamp.now(),
+    })
+    return true
+  } catch (err) {
+    if (err.code === 6) return false // ALREADY_EXISTS — offre déjà enregistrée
+    throw err
+  }
 }
 
 // ── Lire les keywords depuis tous les docs /users/ ───────────────────────────
