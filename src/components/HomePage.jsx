@@ -46,6 +46,7 @@ export default function HomePage() {
   // Gear dropdown — keywords API par utilisateur
   const [gearOpen, setGearOpen] = useState(false)
   const [apiKeywords, setApiKeywords] = useState('')
+  const [userKeywords, setUserKeywords] = useState([])
   const [gearSaving, setGearSaving] = useState(false)
   const [gearSaved, setGearSaved] = useState(false)
   const gearRef = useRef(null)
@@ -67,7 +68,9 @@ export default function HomePage() {
     const unsub = onSnapshot(userRef, (snap) => {
       if (snap.exists()) {
         setAppliedJobIds(snap.data().appliedJobIds ?? [])
-        setApiKeywords((snap.data().searchKeywords ?? []).join(', '))
+        const kws = snap.data().searchKeywords ?? []
+        setUserKeywords(kws)
+        setApiKeywords(kws.join(', '))
       } else {
         setDoc(userRef, { appliedJobIds: [], searchKeywords: [] })
       }
@@ -136,6 +139,11 @@ export default function HomePage() {
     )
   }
 
+  function matchesUserKeywords(job) {
+    if (!job.keyword || userKeywords.length === 0) return true
+    return userKeywords.some((kw) => kw.toLowerCase() === job.keyword.toLowerCase())
+  }
+
   function matchesSource(job) {
     if (selectedSources.size === 0 || selectedSources.size === ALL_SOURCES.length) return true
     return selectedSources.has(job.source)
@@ -143,8 +151,8 @@ export default function HomePage() {
 
   const notApplied = jobs.filter((j) => !appliedJobIds.includes(j.id))
   const applied = jobs.filter((j) => appliedJobIds.includes(j.id))
-  const filteredNotApplied = notApplied.filter((j) => matchesSearch(j) && matchesSource(j))
-  const filteredApplied = applied.filter((j) => matchesSearch(j) && matchesSource(j))
+  const filteredNotApplied = notApplied.filter((j) => matchesUserKeywords(j) && matchesSearch(j) && matchesSource(j))
+  const filteredApplied = applied.filter((j) => matchesUserKeywords(j) && matchesSearch(j) && matchesSource(j))
 
   return (
     <div className="app-layout">

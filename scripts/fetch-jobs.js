@@ -265,7 +265,7 @@ async function main() {
     console.log(`${all.length} offres brutes → ${filtered.length} après filtre titre`)
 
     for (const job of filtered) {
-      const saved = await saveJob(job)
+      const saved = await saveJob({ ...job, keyword })
       if (saved) totalNew++
     }
   }
