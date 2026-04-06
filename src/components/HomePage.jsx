@@ -43,6 +43,9 @@ export default function HomePage() {
   // Filtre état
   const [etatFilter, setEtatFilter] = useState('all')
 
+  // Filtre niveau
+  const [levelFilter, setLevelFilter] = useState('offers')
+
   // Gear dropdown — keywords API par utilisateur
   const [gearOpen, setGearOpen] = useState(false)
   const [apiKeywords, setApiKeywords] = useState('')
@@ -145,6 +148,20 @@ export default function HomePage() {
     return userKeywords.some((kw) => norm(kw) === norm(job.keyword))
   }
 
+  function getLevelCategory(title) {
+    const t = (title ?? '').toUpperCase()
+    if (/\bCONFIRM[EÉ]\b/.test(t)) return 'offers'
+    if (/\bSTAGIAIRE\b|\bSTAGE\b/.test(t)) return 'stage'
+    if (/\bJUNIOR\b|\bD[ÉE]BUTANT\b|PREMIER EMPLOI/.test(t)) return 'junior'
+    if (/\bSENIOR\b|\bEXPERT\b/.test(t)) return 'senior'
+    return 'offers'
+  }
+
+  function matchesLevel(job) {
+    if (levelFilter === 'all') return true
+    return getLevelCategory(job.title) === levelFilter
+  }
+
   function matchesSource(job) {
     if (selectedSources.size === 0 || selectedSources.size === ALL_SOURCES.length) return true
     return selectedSources.has(job.source)
@@ -152,8 +169,8 @@ export default function HomePage() {
 
   const notApplied = jobs.filter((j) => !appliedJobIds.includes(j.id))
   const applied = jobs.filter((j) => appliedJobIds.includes(j.id))
-  const filteredNotApplied = notApplied.filter((j) => matchesUserKeywords(j) && matchesSearch(j) && matchesSource(j))
-  const filteredApplied = applied.filter((j) => matchesUserKeywords(j) && matchesSearch(j) && matchesSource(j))
+  const filteredNotApplied = notApplied.filter((j) => matchesUserKeywords(j) && matchesSearch(j) && matchesSource(j) && matchesLevel(j))
+  const filteredApplied = applied.filter((j) => matchesUserKeywords(j) && matchesSearch(j) && matchesSource(j) && matchesLevel(j))
 
   return (
     <div className="app-layout">
@@ -301,6 +318,24 @@ export default function HomePage() {
                     key={v}
                     className={`pill${etatFilter === v ? ' pill-active' : ''}`}
                     onClick={() => setEtatFilter(v)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="level-pills">
+                {[
+                  ['all', 'Toutes les offres'],
+                  ['offers', 'Offres'],
+                  ['junior', 'Junior'],
+                  ['senior', 'Senior'],
+                  ['stage', 'Stage'],
+                ].map(([v, label]) => (
+                  <button
+                    key={v}
+                    className={`pill${levelFilter === v ? ' pill-active' : ''}`}
+                    onClick={() => setLevelFilter(v)}
                   >
                     {label}
                   </button>
