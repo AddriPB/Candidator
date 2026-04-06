@@ -254,8 +254,6 @@ async function main() {
 
   for (const keyword of keywords) {
     console.log(`\n--- "${keyword}" ---`)
-    const all = []
-
     const ftJobs = ftToken ? await fetchFranceTravail(keyword, ftToken) : []
     const adzunaJobs = await fetchAdzuna(keyword)
     const jsearchJobs = await fetchJSearch(keyword)
