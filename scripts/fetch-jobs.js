@@ -256,10 +256,12 @@ async function main() {
     console.log(`\n--- "${keyword}" ---`)
     const all = []
 
-    if (ftToken) all.push(...await fetchFranceTravail(keyword, ftToken))
-    all.push(...await fetchAdzuna(keyword))
-    all.push(...await fetchJSearch(keyword))
-    all.push(...await fetchCareerjet(keyword))
+    const ftJobs = ftToken ? await fetchFranceTravail(keyword, ftToken) : []
+    const adzunaJobs = await fetchAdzuna(keyword)
+    const jsearchJobs = await fetchJSearch(keyword)
+    const careerjetJobs = await fetchCareerjet(keyword)
+    const all = [...ftJobs, ...adzunaJobs, ...jsearchJobs, ...careerjetJobs]
+    console.log(`FT:${ftJobs.length} Adzuna:${adzunaJobs.length} JSearch:${jsearchJobs.length} Careerjet:${careerjetJobs.length}`)
 
     const filtered = all.filter((job) => matchesRoleFilter(job.title))
     console.log(`${all.length} offres brutes → ${filtered.length} après filtre titre`)
