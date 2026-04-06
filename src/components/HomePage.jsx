@@ -141,7 +141,8 @@ export default function HomePage() {
 
   function matchesUserKeywords(job) {
     if (!job.keyword || userKeywords.length === 0) return true
-    return userKeywords.some((kw) => kw.toLowerCase() === job.keyword.toLowerCase())
+    const norm = (s) => s.toLowerCase().normalize('NFC')
+    return userKeywords.some((kw) => norm(kw) === norm(job.keyword))
   }
 
   function matchesSource(job) {

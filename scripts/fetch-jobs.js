@@ -62,7 +62,7 @@ async function getAllUserKeywords() {
   const keywordSet = new Set()
   for (const userDoc of snap.docs) {
     for (const kw of (userDoc.data().searchKeywords ?? [])) {
-      if (kw.trim()) keywordSet.add(kw.trim())
+      if (kw.trim()) keywordSet.add(kw.trim().normalize('NFC'))
     }
   }
   // Fallback si aucun utilisateur n'a configuré de keywords
