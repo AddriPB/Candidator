@@ -261,10 +261,9 @@ async function main() {
     const all = [...ftJobs, ...adzunaJobs, ...jsearchJobs, ...careerjetJobs]
     console.log(`FT:${ftJobs.length} Adzuna:${adzunaJobs.length} JSearch:${jsearchJobs.length} Careerjet:${careerjetJobs.length}`)
 
-    const filtered = all.filter((job) => matchesRoleFilter(job.title))
-    console.log(`${all.length} offres brutes → ${filtered.length} après filtre titre`)
+    console.log(`${all.length} offres récupérées`)
 
-    for (const job of filtered) {
+    for (const job of all) {
       const saved = await saveJob({ ...job, keyword })
       if (saved) totalNew++
     }
