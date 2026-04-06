@@ -181,6 +181,8 @@ async function fetchCareerjet(keyword) {
     affid: process.env.CAREERJET_AFFILIATE_ID,
     locale_code: 'fr_FR',
     pagesize: '99',
+    user_ip: '1.0.0.1',
+    user_agent: 'Mozilla/5.0 (compatible; Candidator/1.0)',
   })
   // Note : l'API publique Careerjet utilise HTTP (pas HTTPS)
   const res = await fetch(`http://public.api.careerjet.net/search?${params}`)
