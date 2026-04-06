@@ -177,21 +177,17 @@ async function fetchJSearch(keyword) {
 async function fetchCareerjet(keyword) {
   console.log(`Careerjet: appel pour "${keyword}" | affid=${process.env.CAREERJET_AFFILIATE_ID ? 'OK' : 'MANQUANT'}`)
   const params = new URLSearchParams({
-    search: keyword,
+    keywords: keyword,
     location: 'Ile de France',
+    affid: process.env.CAREERJET_AFFILIATE_ID,
     locale_code: 'fr_FR',
+    pagesize: '99',
     user_ip: '1.0.0.1',
     user_agent: 'Mozilla/5.0 (compatible; Candidator/1.0)',
   })
-  const credentials = Buffer.from(`${process.env.CAREERJET_AFFILIATE_ID}:`).toString('base64')
   let res
   try {
-    res = await fetch(`https://search.api.careerjet.net/v4/query?${params}`, {
-      headers: {
-        Authorization: `Basic ${credentials}`,
-        Referer: 'https://addripb.github.io/Candidator/',
-      },
-    })
+    res = await fetch(`http://public.api.careerjet.net/search?${params}`)
   } catch (err) {
     console.warn(`Careerjet "${keyword}" erreur réseau: ${err.message}`)
     return []
