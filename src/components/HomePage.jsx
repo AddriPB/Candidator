@@ -389,13 +389,26 @@ export default function HomePage() {
                   </button>
                 ))}
               </div>
-              <div className="filter-select-group mobile-only">
-                <label className="filter-select-label">État</label>
-                <select className="filter-select" value={etatFilter} onChange={(e) => setEtatFilter(e.target.value)}>
-                  <option value="all">Toutes</option>
-                  <option value="pending">En attente</option>
-                  <option value="applied">Postulé</option>
-                </select>
+              {/* Selects État + Expérience groupés sur une ligne — mobile uniquement */}
+              <div className="filter-selects-row mobile-only">
+                <div className="filter-select-group">
+                  <label className="filter-select-label">État</label>
+                  <select className="filter-select" value={etatFilter} onChange={(e) => setEtatFilter(e.target.value)}>
+                    <option value="all">Toutes</option>
+                    <option value="pending">En attente</option>
+                    <option value="applied">Postulé</option>
+                  </select>
+                </div>
+                <div className="filter-select-group">
+                  <label className="filter-select-label">Expérience</label>
+                  <select className="filter-select" value={levelFilter} onChange={(e) => setLevelFilter(e.target.value)}>
+                    <option value="all">Toutes</option>
+                    <option value="offers">Offres</option>
+                    <option value="junior">Junior</option>
+                    <option value="senior">Senior</option>
+                    <option value="stage">Stage</option>
+                  </select>
+                </div>
               </div>
 
               <div className="level-pills desktop-only">
@@ -414,16 +427,6 @@ export default function HomePage() {
                     {label}
                   </button>
                 ))}
-              </div>
-              <div className="filter-select-group mobile-only">
-                <label className="filter-select-label">Expérience</label>
-                <select className="filter-select" value={levelFilter} onChange={(e) => setLevelFilter(e.target.value)}>
-                  <option value="all">Toutes</option>
-                  <option value="offers">Offres</option>
-                  <option value="junior">Junior</option>
-                  <option value="senior">Senior</option>
-                  <option value="stage">Stage</option>
-                </select>
               </div>
             </div>
 

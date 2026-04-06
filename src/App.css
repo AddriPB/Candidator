@@ -169,7 +169,7 @@ body {
   height: 56px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 16px;
   position: sticky;
   top: 0;
   z-index: 10;
@@ -207,6 +207,7 @@ body {
   align-items: center;
   gap: 16px;
   position: relative;
+  margin-left: auto;
 }
 
 /* ── Utilitaires responsive ── */
@@ -405,6 +406,12 @@ body {
 }
 
 /* ── Selects filtres ── */
+.filter-selects-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
 .filter-select-group {
   display: flex;
   align-items: center;
