@@ -210,7 +210,7 @@ export default function HomePage() {
             <span className="header-count">
               {activeSearch
                 ? `${filteredNotApplied.length} résultat${filteredNotApplied.length !== 1 ? 's' : ''}`
-                : `${notApplied.length} offre${notApplied.length !== 1 ? 's' : ''} en attente`}
+                : `${filteredNotApplied.length} offre${filteredNotApplied.length !== 1 ? 's' : ''} en attente`}
             </span>
           )}
         </div>
