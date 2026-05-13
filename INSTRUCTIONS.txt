@@ -1,0 +1,11 @@
+Actions manuelles après push :
+
+1. Vérifier que le repo GitHub affiche bien la base Opportunity Radar.
+2. Renommer le repo GitHub en Opportunity Radar si ce n'est pas déjà fait.
+3. Vérifier les GitHub Actions et supprimer les workflows inutiles côté GitHub.
+4. Vérifier les secrets GitHub et supprimer ceux qui ne servent plus.
+5. Vérifier GitHub Pages si activé et le désactiver si inutile.
+6. Vérifier les branches distantes et supprimer les branches obsolètes.
+7. Vérifier les paramètres du repo GitHub.
+8. Confirmer que le nom, la description et les topics correspondent à Opportunity Radar.
+9. Supprimer manuellement côté GitHub tout élément hérité impossible à nettoyer depuis le repo local.

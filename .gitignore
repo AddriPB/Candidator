@@ -1,34 +1,27 @@
-# Dépendances (volumineuses, recréées via npm install)
+# Dependencies
 node_modules/
 
-# Build (recréé via npm run build)
+# Build outputs
 dist/
+build/
 
-# Runtime local Opportunity Radar
+# Runtime data
 data/
+logs/
+*.log
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
 *.db
 *.db-shm
 *.db-wal
-logs/
 
-# Variables d'environnement — NE JAMAIS committer
+# Environment and secrets
 .env
 .env.local
 .env.*.local
-candicator_nocommit.env
 
-# Fichiers JSON privés exportés de consoles API — NE JAMAIS committer
-*.json
-!package.json
-!package-lock.json
-firebase*clé*
-firebase clé privée no commit
-
-# Documentation locale uniquement
-SETUP.txt
-
-# Système macOS
+# Local tooling
 .DS_Store
+.claude/
+SETUP.txt
