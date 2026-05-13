@@ -1,43 +1,40 @@
 import { createContext, useContext, useEffect, useState } from 'react'
-import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth'
-import { auth } from '../firebase'
 
 const AuthContext = createContext(null)
 
+async function api(path, options = {}) {
+  const res = await fetch(path, {
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options,
+  })
+  if (!res.ok) throw new Error(`API ${path}: ${res.status}`)
+  return res.json()
+}
+
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null)
-  const [workspaceName, setWorkspaceName] = useState(null)
+  const [authenticated, setAuthenticated] = useState(false)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      if (firebaseUser) {
-        // Extraire le nom d'espace depuis l'email (format: workspace@candidator.internal)
-        const name = firebaseUser.email.replace('@candidator.internal', '')
-        setUser(firebaseUser)
-        setWorkspaceName(name)
-      } else {
-        setUser(null)
-        setWorkspaceName(null)
-      }
-      setLoading(false)
-    })
-    return unsubscribe
+    api('/api/auth/me')
+      .then((data) => setAuthenticated(Boolean(data.authenticated)))
+      .catch(() => setAuthenticated(false))
+      .finally(() => setLoading(false))
   }, [])
 
-  // L'utilisateur entre workspace + PIN → on construit email et password
-  async function login(workspace, pin) {
-    const email = `${workspace}@candidator.internal`
-    const password = `${workspace}_${pin}`
-    await signInWithEmailAndPassword(auth, email, password)
+  async function login(password) {
+    await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ password }) })
+    setAuthenticated(true)
   }
 
   async function logout() {
-    await signOut(auth)
+    await api('/api/auth/logout', { method: 'POST' })
+    setAuthenticated(false)
   }
 
   return (
-    <AuthContext.Provider value={{ user, workspaceName, loading, login, logout }}>
+    <AuthContext.Provider value={{ user: authenticated, loading, login, logout }}>
       {children}
     </AuthContext.Provider>
   )

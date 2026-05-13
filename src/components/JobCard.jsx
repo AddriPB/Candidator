@@ -1,96 +1,62 @@
-import { useState } from 'react'
-
-function formatDate(timestamp) {
-  if (!timestamp) return ''
-  const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp)
-  return date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' })
-}
-
 const SOURCE_LABELS = {
   france_travail: 'France Travail',
   adzuna: 'Adzuna',
-  jsearch: 'LinkedIn / Indeed',
+  jsearch: 'JSearch',
   careerjet: 'Careerjet',
 }
 
-export default function JobCard({ job, isApplied, onMarkApplied }) {
-  const [marking, setMarking] = useState(false)
-
-  async function handleMarkApplied() {
-    if (marking || isApplied) return
-    setMarking(true)
-    try {
-      await onMarkApplied(job.id)
-    } finally {
-      setMarking(false)
-    }
-  }
-
+export default function JobCard({ offer, onStatus }) {
   return (
-    <div className={`job-card${isApplied ? ' applied' : ''}`}>
-      <div className="job-card-info">
-        <div className="job-title">{job.title}</div>
-        <div className="job-company">{job.company}</div>
-        <div className="job-meta">
-          <span className="job-source-badge">
-            {SOURCE_LABELS[job.source] ?? job.source}
-          </span>
-          {job.addedAt && (
-            <span className="job-date">Ajouté le {formatDate(job.addedAt)}</span>
-          )}
-          {job.salary && (
-            <span className="job-salary">{job.salary}</span>
-          )}
-          {job.contactName && (
-            <>
-              <span className="job-contact-separator">·</span>
-              <span className="job-contact">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-                  <circle cx="12" cy="7" r="4"/>
-                </svg>
-                {job.contactName}
-                {job.contactPhone && (
-                  <> — <a href={`tel:${job.contactPhone}`}>{job.contactPhone}</a></>
-                )}
-              </span>
-            </>
-          )}
-        </div>
+    <article className={`offer-card verdict-${slug(offer.verdict)}`}>
+      <div className="offer-topline">
+        <span className="source-pill">{SOURCE_LABELS[offer.source] || offer.source}</span>
+        <span className="score-pill">{offer.score}/100</span>
       </div>
-
-      <div className="job-card-actions">
-        <a
-          href={job.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="btn-apply-link"
-        >
-          Postuler
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-            <polyline points="15 3 21 3 21 9"/>
-            <line x1="10" y1="14" x2="21" y2="3"/>
-          </svg>
-        </a>
-
-        {isApplied ? (
-          <span className="applied-badge">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <polyline points="20 6 9 17 4 12"/>
-            </svg>
-            Postulé
-          </span>
-        ) : (
-          <button
-            className="btn-mark-applied"
-            onClick={handleMarkApplied}
-            disabled={marking}
-          >
-            {marking ? 'Enregistrement…' : "J'ai postulé"}
-          </button>
-        )}
+      <h2>{offer.title}</h2>
+      <div className="company-line">{offer.company} · {offer.location || 'Localisation inconnue'}</div>
+      <div className="offer-facts">
+        <span>{offer.contractType || 'Contrat ?'}</span>
+        <span>{offer.remoteRaw || 'Télétravail ?'}</span>
+        <span>{offer.salaryRaw || salaryRange(offer) || 'Salaire ?'}</span>
       </div>
+      <div className="verdict-row">
+        <strong>{offer.verdict}</strong>
+        <span>{offer.why}</span>
+      </div>
+      <SignalList title="Signaux positifs" items={offer.positiveSignals} />
+      <SignalList title="Signaux négatifs" items={offer.negativeSignals} />
+      <SignalList title="Données manquantes" items={offer.missingData} />
+      <p className="action-copy">{offer.proposedAction}</p>
+      <div className="offer-actions">
+        <a href={offer.url} target="_blank" rel="noreferrer">Voir l'offre</a>
+        <button onClick={() => onStatus(offer.id, 'applied')} disabled={offer.status === 'applied'}>
+          {offer.status === 'applied' ? 'Candidature notée' : 'Marquer candidaté'}
+        </button>
+        <button className="ghost" onClick={() => onStatus(offer.id, 'rejected')}>
+          Rejeter
+        </button>
+      </div>
+    </article>
+  )
+}
+
+function SignalList({ title, items = [] }) {
+  if (!items.length) return null
+  return (
+    <div className="signals">
+      <span>{title}</span>
+      <ul>{items.map((item) => <li key={item}>{item}</li>)}</ul>
     </div>
   )
+}
+
+function salaryRange(offer) {
+  if (offer.salaryMin && offer.salaryMax) return `${offer.salaryMin} - ${offer.salaryMax} EUR`
+  if (offer.salaryMin) return `Dès ${offer.salaryMin} EUR`
+  if (offer.salaryMax) return `Jusqu'à ${offer.salaryMax} EUR`
+  return ''
+}
+
+function slug(value) {
+  return String(value || '').normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/\W+/g, '-')
 }

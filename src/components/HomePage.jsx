@@ -1,552 +1,164 @@
-import { useEffect, useRef, useState } from 'react'
-import {
-  collection,
-  query,
-  orderBy,
-  onSnapshot,
-  doc,
-  setDoc,
-  updateDoc,
-  arrayUnion,
-} from 'firebase/firestore'
-import { db } from '../firebase'
+import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import JobCard from './JobCard'
 
-const SOURCE_LABELS = {
-  france_travail: 'France Travail',
-  adzuna: 'Adzuna',
-  jsearch: 'LinkedIn / Indeed',
-  careerjet: 'Careerjet',
+async function api(path, options = {}) {
+  const res = await fetch(path, {
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options,
+  })
+  if (!res.ok) throw new Error(`API ${path}: ${res.status}`)
+  return res.json()
 }
-const ALL_SOURCES = Object.keys(SOURCE_LABELS)
 
 export default function HomePage() {
-  const { workspaceName, logout } = useAuth()
+  const { logout } = useAuth()
+  const [offers, setOffers] = useState([])
+  const [settings, setSettings] = useState(null)
+  const [query, setQuery] = useState('')
+  const [verdict, setVerdict] = useState('all')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [scanState, setScanState] = useState('')
 
-  // Offres
-  const [jobs, setJobs] = useState([])
-  const [jobsLoading, setJobsLoading] = useState(true)
-
-  // Offres postulées
-  const [appliedJobIds, setAppliedJobIds] = useState([])
-
-  // Recherche client-side
-  const [searchQuery, setSearchQuery] = useState('')
-  const [activeSearch, setActiveSearch] = useState('')
-
-  // Filtre source
-  const [selectedSources, setSelectedSources] = useState(new Set(ALL_SOURCES))
-  const [sourceDropOpen, setSourceDropOpen] = useState(false)
-  const sourceDropRef = useRef(null)
-
-  // Filtre état
-  const [etatFilter, setEtatFilter] = useState('all')
-
-  // Filtre niveau
-  const [levelFilter, setLevelFilter] = useState('offers')
-
-  // Burger menu mobile
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const mobileMenuRef = useRef(null)
-  const [mobileSourceDropOpen, setMobileSourceDropOpen] = useState(false)
-
-  // Gear dropdown — keywords API par utilisateur
-  const [gearOpen, setGearOpen] = useState(false)
-  const [apiKeywords, setApiKeywords] = useState('')
-  const [userKeywords, setUserKeywords] = useState([])
-  const [gearSaving, setGearSaving] = useState(false)
-  const [gearSaved, setGearSaved] = useState(false)
-  const gearRef = useRef(null)
-
-  // Charger les offres en temps réel
   useEffect(() => {
-    const q = query(collection(db, 'jobs'), orderBy('addedAt', 'desc'))
-    const unsub = onSnapshot(q, (snap) => {
-      setJobs(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
-      setJobsLoading(false)
-    })
-    return unsub
+    load()
   }, [])
 
-  // Charger le profil utilisateur (offres postulées + keywords API)
-  useEffect(() => {
-    if (!workspaceName) return
-    const userRef = doc(db, 'users', workspaceName)
-    const unsub = onSnapshot(userRef, (snap) => {
-      if (snap.exists()) {
-        setAppliedJobIds(snap.data().appliedJobIds ?? [])
-        const kws = snap.data().searchKeywords ?? []
-        setUserKeywords(kws)
-        setApiKeywords(kws.join(', '))
-      } else {
-        setDoc(userRef, { appliedJobIds: [], searchKeywords: [] })
-      }
+  async function load() {
+    setLoading(true)
+    const [offersData, settingsData] = await Promise.all([
+      api('/api/offers?limit=200'),
+      api('/api/settings'),
+    ])
+    setOffers(offersData.offers)
+    setSettings(settingsData.settings)
+    setLoading(false)
+  }
+
+  async function saveSettings(event) {
+    event.preventDefault()
+    setSaving(true)
+    const form = new FormData(event.currentTarget)
+    const patch = {
+      salaire_min: Number(form.get('salaire_min')),
+      annees_experience: Number(form.get('annees_experience')),
+      teletravail_min_jours: Number(form.get('teletravail_min_jours')),
+      keywords: splitLines(form.get('keywords')),
+      sources_actives: form.getAll('sources_actives'),
+      blacklist_entreprises: splitLines(form.get('blacklist_entreprises')),
+      blacklist_secteurs: splitLines(form.get('blacklist_secteurs')),
+    }
+    const data = await api('/api/settings', { method: 'PUT', body: JSON.stringify(patch) })
+    setSettings(data.settings)
+    setSaving(false)
+  }
+
+  async function runScan() {
+    setScanState('Scan en cours...')
+    try {
+      const data = await api('/api/scan', { method: 'POST' })
+      setScanState(`${data.run.keptCount} offres conservées sur ${data.run.fetchedCount}`)
+      await load()
+    } catch (error) {
+      setScanState(`Erreur scan: ${error.message}`)
+    }
+  }
+
+  async function updateStatus(id, status) {
+    await api(`/api/offers/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) })
+    setOffers((current) => current.map((offer) => offer.id === id ? { ...offer, status } : offer))
+  }
+
+  const filtered = useMemo(() => {
+    const term = query.trim().toLowerCase()
+    return offers.filter((offer) => {
+      const matchesVerdict = verdict === 'all' || offer.verdict === verdict
+      const matchesQuery = !term || `${offer.title} ${offer.company} ${offer.location}`.toLowerCase().includes(term)
+      return matchesVerdict && matchesQuery
     })
-    return unsub
-  }, [workspaceName])
+  }, [offers, query, verdict])
 
-  // Fermer le source dropdown au clic extérieur
-  useEffect(() => {
-    if (!sourceDropOpen) return
-    function handleClickOutside(e) {
-      if (sourceDropRef.current && !sourceDropRef.current.contains(e.target)) {
-        setSourceDropOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [sourceDropOpen])
+  const stats = useMemo(() => ({
+    candidate: offers.filter((offer) => offer.verdict === 'à candidater').length,
+    watch: offers.filter((offer) => offer.verdict === 'à surveiller').length,
+    reject: offers.filter((offer) => offer.verdict === 'à rejeter').length,
+  }), [offers])
 
-  // Fermer le source drop mobile quand le burger se ferme
-  useEffect(() => {
-    if (!mobileMenuOpen) setMobileSourceDropOpen(false)
-  }, [mobileMenuOpen])
-
-  // Fermer le burger menu au clic extérieur
-  useEffect(() => {
-    if (!mobileMenuOpen) return
-    function handleClickOutside(e) {
-      if (mobileMenuRef.current && !mobileMenuRef.current.contains(e.target)) {
-        setMobileMenuOpen(false)
-      }
-    }
-    function handleKey(e) {
-      if (e.key === 'Escape') setMobileMenuOpen(false)
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    document.addEventListener('keydown', handleKey)
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
-      document.removeEventListener('keydown', handleKey)
-    }
-  }, [mobileMenuOpen])
-
-  // Fermer le gear panel au clic extérieur ou Escape
-  useEffect(() => {
-    if (!gearOpen) return
-    function handleClickOutside(e) {
-      if (gearRef.current && !gearRef.current.contains(e.target)) {
-        setGearOpen(false)
-      }
-    }
-    function handleKey(e) {
-      if (e.key === 'Escape') setGearOpen(false)
-    }
-    document.addEventListener('mousedown', handleClickOutside)
-    document.addEventListener('keydown', handleKey)
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
-      document.removeEventListener('keydown', handleKey)
-    }
-  }, [gearOpen])
-
-  async function handleMarkApplied(jobId) {
-    const userRef = doc(db, 'users', workspaceName)
-    await updateDoc(userRef, { appliedJobIds: arrayUnion(jobId) })
-  }
-
-  async function handleSaveApiKeywords() {
-    setGearSaving(true)
-    setGearSaved(false)
-    const userRef = doc(db, 'users', workspaceName)
-    const keywordsList = apiKeywords.split(',').map((k) => k.trim()).filter(Boolean)
-    await setDoc(userRef, { searchKeywords: keywordsList }, { merge: true })
-    setGearSaving(false)
-    setGearSaved(true)
-    setTimeout(() => setGearSaved(false), 3000)
-  }
-
-  function handleSearch() {
-    setActiveSearch(searchQuery.trim())
-  }
-
-  // Filtres client-side
-  function matchesSearch(job) {
-    if (!activeSearch) return true
-    const term = activeSearch.toLowerCase()
-    return (
-      job.title?.toLowerCase().includes(term) ||
-      job.company?.toLowerCase().includes(term)
-    )
-  }
-
-  function matchesUserKeywords(job) {
-    if (!job.keyword || userKeywords.length === 0) return true
-    const norm = (s) => s.toLowerCase().normalize('NFC')
-    return userKeywords.some((kw) => norm(kw) === norm(job.keyword))
-  }
-
-  function getLevelCategory(title) {
-    const t = (title ?? '').toUpperCase()
-    if (/\bCONFIRM[EÉ]\b/.test(t)) return 'offers'
-    if (/\bSTAGIAIRE\b|\bSTAGE\b/.test(t)) return 'stage'
-    if (/\bJUNIOR\b|\bD[ÉE]BUTANT\b|PREMIER EMPLOI/.test(t)) return 'junior'
-    if (/\bSENIOR\b|\bEXPERT\b/.test(t)) return 'senior'
-    return 'offers'
-  }
-
-  function matchesLevel(job) {
-    if (levelFilter === 'all') return true
-    return getLevelCategory(job.title) === levelFilter
-  }
-
-  function matchesSource(job) {
-    if (selectedSources.size === 0 || selectedSources.size === ALL_SOURCES.length) return true
-    return selectedSources.has(job.source)
-  }
-
-  const notApplied = jobs.filter((j) => !appliedJobIds.includes(j.id))
-  const applied = jobs.filter((j) => appliedJobIds.includes(j.id))
-  const filteredNotApplied = notApplied.filter((j) => matchesUserKeywords(j) && matchesSearch(j) && matchesSource(j) && matchesLevel(j))
-  const filteredApplied = applied.filter((j) => matchesUserKeywords(j) && matchesSearch(j) && matchesSource(j) && matchesLevel(j))
+  if (loading) return <div className="loading-screen">Chargement...</div>
 
   return (
-    <div className="app-layout">
-      <header className="app-header">
-        <div className="header-left">
-          <span className="app-logo">Candidator</span>
-          {!jobsLoading && (
-            <span className="header-count">
-              {activeSearch
-                ? `${filteredNotApplied.length} résultat${filteredNotApplied.length !== 1 ? 's' : ''}`
-                : `${filteredNotApplied.length} offre${filteredNotApplied.length !== 1 ? 's' : ''} en attente`}
-            </span>
-          )}
+    <main className="radar-shell">
+      <header className="radar-header">
+        <div>
+          <div className="eyebrow">Radar privé</div>
+          <h1>Opportunity Radar</h1>
+          <p>PO / PM / BA / AMOA, CDI, IDF ou full remote France.</p>
         </div>
-
-        {/* Barre de recherche — visible uniquement sur mobile (en desktop elle est dans filter-bar) */}
-        <div className="header-search mobile-only">
-          <div className="search-bar">
-            <input
-              className="search-input"
-              type="text"
-              placeholder="Rechercher…"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-            />
-            <button className="btn-search" onClick={handleSearch} aria-label="Rechercher">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
-                stroke="currentColor" strokeWidth="2.5">
-                <circle cx="11" cy="11" r="8" />
-                <line x1="21" y1="21" x2="16.65" y2="16.65" />
-              </svg>
-              <span className="btn-search-label">Rechercher</span>
-            </button>
-          </div>
-        </div>
-
-        <div className="header-right">
-          {/* Gear — desktop uniquement */}
-          <div className="gear-dropdown desktop-only" ref={gearRef}>
-            <button
-              className="btn-ghost btn-gear"
-              onClick={() => setGearOpen((o) => !o)}
-              aria-label="Paramètres"
-            >
-              ⚙
-            </button>
-            {gearOpen && (
-              <div className="gear-panel">
-                <div className="settings-field">
-                  <label>Mots-clés API</label>
-                  <input
-                    type="text"
-                    value={apiKeywords}
-                    onChange={(e) => setApiKeywords(e.target.value)}
-                    placeholder="Product Owner, Business Analyst"
-                  />
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', marginTop: 12 }}>
-                  <button
-                    className="btn-save"
-                    onClick={handleSaveApiKeywords}
-                    disabled={gearSaving}
-                  >
-                    {gearSaving ? 'Enregistrement…' : 'Enregistrer'}
-                  </button>
-                  {gearSaved && (
-                    <span className="settings-success">✓ Enregistré</span>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Workspace + logout — desktop uniquement */}
-          <span className="header-workspace desktop-only">
-            Espace : <strong>{workspaceName}</strong>
-          </span>
-          <button className="btn-ghost desktop-only" onClick={logout}>
-            Déconnexion
-          </button>
-
-          {/* Burger — mobile uniquement */}
-          <div className="burger-dropdown" ref={mobileMenuRef}>
-            <button
-              className="btn-ghost btn-burger mobile-only"
-              onClick={() => setMobileMenuOpen((o) => !o)}
-              aria-label="Menu"
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <line x1="3" y1="6" x2="21" y2="6"/>
-                <line x1="3" y1="12" x2="21" y2="12"/>
-                <line x1="3" y1="18" x2="21" y2="18"/>
-              </svg>
-            </button>
-            {mobileMenuOpen && (
-              <div className="mobile-menu">
-                <div className="mobile-menu-top-row">
-                  <span className="mobile-menu-workspace">
-                    Espace : <strong>{workspaceName}</strong>
-                  </span>
-                  <div className="source-drop-wrapper">
-                    <button
-                      className="btn-filter-source"
-                      onClick={() => setMobileSourceDropOpen((o) => !o)}
-                    >
-                      Sources
-                      {selectedSources.size < ALL_SOURCES.length && ` (${selectedSources.size}/${ALL_SOURCES.length})`}
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                        <polyline points="6 9 12 15 18 9"/>
-                      </svg>
-                    </button>
-                    {mobileSourceDropOpen && (
-                      <div className="source-drop-panel source-drop-right">
-                        <label className="source-checkbox-row">
-                          <input
-                            type="checkbox"
-                            checked={selectedSources.size === ALL_SOURCES.length}
-                            onChange={() =>
-                              setSelectedSources(
-                                selectedSources.size === ALL_SOURCES.length ? new Set() : new Set(ALL_SOURCES)
-                              )
-                            }
-                          />
-                          Toutes les sources
-                        </label>
-                        {ALL_SOURCES.map((src) => (
-                          <label key={src} className="source-checkbox-row">
-                            <input
-                              type="checkbox"
-                              checked={selectedSources.has(src)}
-                              onChange={() => {
-                                const next = new Set(selectedSources)
-                                next.has(src) ? next.delete(src) : next.add(src)
-                                setSelectedSources(next)
-                              }}
-                            />
-                            {SOURCE_LABELS[src]}
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div className="settings-field">
-                  <label>Mots-clés API</label>
-                  <input
-                    type="text"
-                    value={apiKeywords}
-                    onChange={(e) => setApiKeywords(e.target.value)}
-                    placeholder="Product Owner, Business Analyst"
-                  />
-                </div>
-                <div>
-                  <button className="btn-save btn-save-full" onClick={handleSaveApiKeywords} disabled={gearSaving}>
-                    {gearSaving ? 'Enregistrement…' : 'Enregistrer'}
-                  </button>
-                  {gearSaved && <span className="settings-success">✓ Enregistré</span>}
-                </div>
-                <button className="btn-ghost btn-logout-mobile" onClick={logout}>
-                  Déconnexion
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
+        <button className="secondary" onClick={logout}>Déconnexion</button>
       </header>
 
-      <main className="app-main">
-        {jobsLoading ? (
-          <div className="jobs-empty">
-            <p>Chargement des offres…</p>
-          </div>
-        ) : jobs.length === 0 ? (
-          <div className="jobs-empty">
-            <p>Aucune offre pour le moment</p>
-            <p>
-              Les offres sont ajoutées automatiquement chaque jour à 7h.
-              Vous pouvez aussi déclencher manuellement le workflow GitHub Actions.
-            </p>
-          </div>
-        ) : (
-          <>
-            {/* Barre de filtres */}
-            <div className="filter-bar">
-              {/* Recherche — desktop uniquement (mobile : dans header-search) */}
-              <div className="desktop-only filter-bar-search">
-                <div className="search-bar">
-                  <input
-                    className="search-input"
-                    type="text"
-                    placeholder="Rechercher…"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                  />
-                  <button className="btn-search" onClick={handleSearch} aria-label="Rechercher">
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
-                      stroke="currentColor" strokeWidth="2.5">
-                      <circle cx="11" cy="11" r="8" />
-                      <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                    </svg>
-                    <span className="btn-search-label">Rechercher</span>
-                  </button>
-                </div>
-              </div>
+      <section className="metrics-grid">
+        <Metric label="À candidater" value={stats.candidate} />
+        <Metric label="À surveiller" value={stats.watch} />
+        <Metric label="À rejeter" value={stats.reject} />
+      </section>
 
-              <div className="source-drop-wrapper desktop-only" ref={sourceDropRef}>
-                <button
-                  className="btn-filter-source"
-                  onClick={() => setSourceDropOpen((o) => !o)}
-                >
-                  Sources
-                  {selectedSources.size < ALL_SOURCES.length && ` (${selectedSources.size}/${ALL_SOURCES.length})`}
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <polyline points="6 9 12 15 18 9"/>
-                  </svg>
-                </button>
-                {sourceDropOpen && (
-                  <div className="source-drop-panel">
-                    <label className="source-checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={selectedSources.size === ALL_SOURCES.length}
-                        onChange={() =>
-                          setSelectedSources(
-                            selectedSources.size === ALL_SOURCES.length ? new Set() : new Set(ALL_SOURCES)
-                          )
-                        }
-                      />
-                      Toutes les sources
-                    </label>
-                    {ALL_SOURCES.map((src) => (
-                      <label key={src} className="source-checkbox-row">
-                        <input
-                          type="checkbox"
-                          checked={selectedSources.has(src)}
-                          onChange={() => {
-                            const next = new Set(selectedSources)
-                            next.has(src) ? next.delete(src) : next.add(src)
-                            setSelectedSources(next)
-                          }}
-                        />
-                        {SOURCE_LABELS[src]}
-                      </label>
-                    ))}
-                  </div>
-                )}
-              </div>
+      <section className="toolbar">
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Rechercher titre, entreprise, lieu" />
+        <select value={verdict} onChange={(event) => setVerdict(event.target.value)}>
+          <option value="all">Tous les verdicts</option>
+          <option value="à candidater">À candidater</option>
+          <option value="à surveiller">À surveiller</option>
+          <option value="à rejeter">À rejeter</option>
+        </select>
+        <button onClick={runScan}>Scanner maintenant</button>
+      </section>
+      {scanState && <div className="scan-state">{scanState}</div>}
 
-              <div className="etat-pills desktop-only">
-                {[['all', 'Toutes'], ['pending', 'En attente'], ['applied', 'Postulé']].map(([v, label]) => (
-                  <button
-                    key={v}
-                    className={`pill${etatFilter === v ? ' pill-active' : ''}`}
-                    onClick={() => setEtatFilter(v)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-              {/* Selects État + Expérience groupés sur une ligne — mobile uniquement */}
-              <div className="filter-selects-row mobile-only">
-                <div className="filter-select-group">
-                  <label className="filter-select-label">État</label>
-                  <select className="filter-select" value={etatFilter} onChange={(e) => setEtatFilter(e.target.value)}>
-                    <option value="all">Toutes</option>
-                    <option value="pending">En attente</option>
-                    <option value="applied">Postulé</option>
-                  </select>
-                </div>
-                <div className="filter-select-group">
-                  <label className="filter-select-label">Expérience</label>
-                  <select className="filter-select" value={levelFilter} onChange={(e) => setLevelFilter(e.target.value)}>
-                    <option value="all">Toutes</option>
-                    <option value="offers">Offres</option>
-                    <option value="junior">Junior</option>
-                    <option value="senior">Senior</option>
-                    <option value="stage">Stage</option>
-                  </select>
-                </div>
-              </div>
+      <section className="settings-panel">
+        <h2>Paramètres</h2>
+        <form onSubmit={saveSettings}>
+          <label>Salaire minimum <input name="salaire_min" type="number" defaultValue={settings.salaire_min} /></label>
+          <label>Années d'expérience <input name="annees_experience" type="number" defaultValue={settings.annees_experience} /></label>
+          <label>Télétravail min. jours <input name="teletravail_min_jours" type="number" defaultValue={settings.teletravail_min_jours} /></label>
+          <label>Keywords <textarea name="keywords" defaultValue={settings.keywords.join('\n')} /></label>
+          <fieldset>
+            <legend>Sources actives</legend>
+            {['france_travail', 'adzuna', 'jsearch', 'careerjet'].map((source) => (
+              <label key={source} className="checkbox-row">
+                <input name="sources_actives" type="checkbox" value={source} defaultChecked={settings.sources_actives.includes(source)} />
+                {source}
+              </label>
+            ))}
+          </fieldset>
+          <label>Blacklist entreprises <textarea name="blacklist_entreprises" defaultValue={settings.blacklist_entreprises.join('\n')} /></label>
+          <label>Blacklist secteurs <textarea name="blacklist_secteurs" defaultValue={settings.blacklist_secteurs.join('\n')} /></label>
+          <button type="submit" disabled={saving}>{saving ? 'Enregistrement...' : 'Enregistrer'}</button>
+        </form>
+      </section>
 
-              <div className="level-pills desktop-only">
-                {[
-                  ['all', 'Toutes les offres'],
-                  ['offers', 'Offres'],
-                  ['junior', 'Junior'],
-                  ['senior', 'Senior'],
-                  ['stage', 'Stage'],
-                ].map(([v, label]) => (
-                  <button
-                    key={v}
-                    className={`pill${levelFilter === v ? ' pill-active' : ''}`}
-                    onClick={() => setLevelFilter(v)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
+      <section className="offers-list">
+        {filtered.length === 0 ? (
+          <div className="empty-state">Aucune offre ne correspond aux filtres.</div>
+        ) : filtered.map((offer) => (
+          <JobCard key={offer.id} offer={offer} onStatus={updateStatus} />
+        ))}
+      </section>
+    </main>
+  )
+}
 
-            {(etatFilter === 'all' || etatFilter === 'pending') && filteredNotApplied.length > 0 && (
-              <>
-                <div className="jobs-section-title">
-                  À candidater ({filteredNotApplied.length})
-                </div>
-                <div className="jobs-list">
-                  {filteredNotApplied.map((job) => (
-                    <JobCard
-                      key={job.id}
-                      job={job}
-                      isApplied={false}
-                      onMarkApplied={handleMarkApplied}
-                    />
-                  ))}
-                </div>
-              </>
-            )}
-
-            {(etatFilter === 'all' || etatFilter === 'applied') && filteredApplied.length > 0 && (
-              <>
-                <div className="jobs-section-title">
-                  Déjà postulé ({filteredApplied.length})
-                </div>
-                <div className="jobs-list">
-                  {filteredApplied.map((job) => (
-                    <JobCard
-                      key={job.id}
-                      job={job}
-                      isApplied={true}
-                      onMarkApplied={handleMarkApplied}
-                    />
-                  ))}
-                </div>
-              </>
-            )}
-
-            {filteredNotApplied.length === 0 && filteredApplied.length === 0 && (
-              <div className="jobs-empty">
-                <p>Aucun résultat</p>
-                <p>Essayez de modifier les filtres ou la recherche.</p>
-              </div>
-            )}
-          </>
-        )}
-      </main>
+function Metric({ label, value }) {
+  return (
+    <div className="metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   )
+}
+
+function splitLines(value) {
+  return String(value || '').split(/\n|,/).map((item) => item.trim()).filter(Boolean)
 }

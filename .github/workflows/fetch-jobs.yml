@@ -1,34 +1,10 @@
-name: Fetch Jobs
+name: Legacy Fetch Jobs Disabled
 
 on:
-  schedule:
-    # Tous les jours à 06h00 UTC = 07h00 Paris (heure d'hiver) / 08h00 (heure d'été)
-    - cron: '0 6 * * *'
-  # Permet de déclencher manuellement depuis l'onglet Actions de GitHub
   workflow_dispatch:
 
 jobs:
-  fetch:
+  disabled:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
-      - name: Install script dependencies
-        run: npm install firebase-admin node-fetch --no-save
-
-      - name: Run fetch jobs script
-        run: node scripts/fetch-jobs.js
-        env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          FRANCE_TRAVAIL_CLIENT_ID: ${{ secrets.FRANCE_TRAVAIL_CLIENT_ID }}
-          FRANCE_TRAVAIL_CLIENT_SECRET: ${{ secrets.FRANCE_TRAVAIL_CLIENT_SECRET }}
-          ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
-          ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
-          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
-          CAREERJET_AFFILIATE_ID: ${{ secrets.CAREERJET_AFFILIATE_ID }}
+      - run: echo "Opportunity Radar V1 collects locally on the Raspberry Pi via PM2 scheduler. This workflow is legacy and intentionally disabled."

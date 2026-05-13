@@ -4,13 +4,23 @@ node_modules/
 # Build (recréé via npm run build)
 dist/
 
+# Runtime local Opportunity Radar
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-shm
+*.db-wal
+logs/
+
 # Variables d'environnement — NE JAMAIS committer
 .env
 .env.local
 .env.*.local
 candicator_nocommit.env
 
-# Clé compte de service Firebase — NE JAMAIS committer
+# Fichiers JSON privés exportés de consoles API — NE JAMAIS committer
 *.json
 !package.json
 !package-lock.json
