@@ -6,7 +6,9 @@ export async function checkSources() {
   const { logs } = await collectOffers(config)
   return logs.map((log) => ({
     source: log.source,
-    ok: log.errorsCount === 0,
-    detail: log.errorsCount ? log.error : `${log.offersCount} result(s)`,
+    ok: log.errorsCount === 0 || log.offersCount > 0,
+    detail: log.errorsCount
+      ? `${log.offersCount} result(s), ${log.errorsCount} partial error(s): ${log.error}`
+      : `${log.offersCount} result(s)`,
   }))
 }
