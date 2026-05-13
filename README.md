@@ -22,8 +22,10 @@ npm run build
 
 ## Déploiement
 
-Le mode de production actuel sert le frontend et l'API depuis le Raspberry Pi.
-Le fichier `.env` reste sur le Pi et n'est pas publié sur GitHub.
+La page GitHub Pages est publique. Elle doit être construite avec
+`VITE_PUBLIC_API_BASE` si le backend est servi depuis une URL HTTPS séparée.
+
+Le fichier `.env` complet reste sur le Pi et n'est pas publié sur GitHub.
 
 ## Règles
 

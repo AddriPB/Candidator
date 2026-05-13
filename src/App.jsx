@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 
+const API_BASE = String(import.meta.env.VITE_PUBLIC_API_BASE || '').replace(/\/$/, '')
+
 export default function App() {
   const [authenticated, setAuthenticated] = useState(false)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
   const [checks, setChecks] = useState([])
 
-  const api = useMemo(() => createApi(), [])
+  const api = useMemo(() => createApi(API_BASE), [])
 
   useEffect(() => {
     api('/api/auth/me')
@@ -84,11 +86,11 @@ export default function App() {
   )
 }
 
-function createApi() {
+function createApi(apiBase) {
   return async function api(path, options = {}) {
     let res
     try {
-      res = await fetch(path, {
+      res = await fetch(`${apiBase}${path}`, {
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
         ...options,
