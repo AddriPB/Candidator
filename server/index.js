@@ -4,7 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loginHandler, logoutHandler, meHandler, requireAuth } from './auth/index.js'
 import { checkSources } from './connectors/sourceChecks.js'
-import { openDatabase, pruneOldData, saveSourceCheckLogs } from './storage/database.js'
+import { getLatestRadarOffers, getLatestSourceChecks, openDatabase, pruneOldData, saveSourceCheckLogs } from './storage/database.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(__dirname, '..')
@@ -53,13 +53,11 @@ app.post('/api/source-check', requireAuth, async (_req, res, next) => {
 })
 
 app.get('/api/source-checks/latest', requireAuth, (_req, res) => {
-  const rows = db.prepare(`
-    SELECT source, status, detail, checked_at AS checkedAt
-    FROM source_checks
-    WHERE checked_at = (SELECT MAX(checked_at) FROM source_checks)
-    ORDER BY source
-  `).all()
-  res.json({ checks: rows })
+  res.json({ checks: getLatestSourceChecks(db) })
+})
+
+app.get('/api/offers', requireAuth, (_req, res) => {
+  res.json(getLatestRadarOffers(db))
 })
 
 app.post('/api/admin/prune', requireAuth, (_req, res) => {
