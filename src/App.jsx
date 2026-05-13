@@ -1,14 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 
-const DEFAULT_API_BASE = import.meta.env.VITE_PUBLIC_API_BASE || ''
-
 export default function App() {
   const [authenticated, setAuthenticated] = useState(false)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
   const [checks, setChecks] = useState([])
 
-  const api = useMemo(() => createApi(DEFAULT_API_BASE), [])
+  const api = useMemo(() => createApi(), [])
 
   useEffect(() => {
     api('/api/auth/me')
@@ -25,14 +23,14 @@ export default function App() {
       await api('/api/auth/login', {
         method: 'POST',
         body: JSON.stringify({
-          username: form.get('username'),
+          username: String(form.get('username') || '').trim(),
           password: form.get('password'),
         }),
       })
       setAuthenticated(true)
       setMessage('Connexion active.')
-    } catch {
-      setMessage('Connexion refusée.')
+    } catch (error) {
+      setMessage(loginErrorMessage(error))
     }
   }
 
@@ -52,9 +50,7 @@ export default function App() {
   return (
     <main className="page">
       <section className="panel">
-        <p className="eyebrow">Radar privé</p>
         <h1>Opportunity Radar</h1>
-        <p>Front statique public, données protégées par le backend du Pi.</p>
 
         {!authenticated ? (
           <form className="stack" onSubmit={login}>
@@ -88,14 +84,34 @@ export default function App() {
   )
 }
 
-function createApi(apiBase) {
+function createApi() {
   return async function api(path, options = {}) {
-    const res = await fetch(`${apiBase}${path}`, {
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-      ...options,
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    let res
+    try {
+      res = await fetch(path, {
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+        ...options,
+      })
+    } catch (error) {
+      throw new ApiError('network', { cause: error })
+    }
+    if (!res.ok) throw new ApiError('http', { status: res.status })
     return res.json()
+  }
+}
+
+function loginErrorMessage(error) {
+  if (error instanceof ApiError && error.status === 401) return 'Identifiant ou mot de passe incorrect.'
+  if (error instanceof ApiError && error.kind === 'network') return 'API injoignable.'
+  return 'Connexion impossible.'
+}
+
+class ApiError extends Error {
+  constructor(kind, options = {}) {
+    super(kind === 'http' ? `HTTP ${options.status}` : 'Network error', options)
+    this.name = 'ApiError'
+    this.kind = kind
+    this.status = options.status
   }
 }

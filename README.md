@@ -20,6 +20,11 @@ npm run dev
 npm run build
 ```
 
+## Déploiement
+
+Le mode de production actuel sert le frontend et l'API depuis le Raspberry Pi.
+Le fichier `.env` reste sur le Pi et n'est pas publié sur GitHub.
+
 ## Règles
 
 - Ne pas committer `.env`, secrets, tokens, bases locales, logs ou dossiers de

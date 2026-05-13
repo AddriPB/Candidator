@@ -8,8 +8,12 @@ export function requireAuth(req, res, next) {
 }
 
 export function loginHandler(req, res) {
-  const username = String(req.body?.username || '')
+  const username = String(req.body?.username || '').trim()
   const password = String(req.body?.password || '')
+
+  if (!hasAuthConfig()) {
+    return res.status(503).json({ error: 'auth_not_configured' })
+  }
 
   if (!isValidLogin(username, password)) {
     return res.status(401).json({ error: 'invalid_credentials' })
@@ -20,7 +24,7 @@ export function loginHandler(req, res) {
 }
 
 export function logoutHandler(_req, res) {
-  res.setHeader('Set-Cookie', `${COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureFlag()}`)
+  res.setHeader('Set-Cookie', `${COOKIE_NAME}=; HttpOnly; SameSite=${sameSite()}; Path=/; Max-Age=0${secureFlag()}`)
   res.json({ ok: true })
 }
 
@@ -30,6 +34,10 @@ export function meHandler(req, res) {
 
 function isValidLogin(username, password) {
   return timingSafe(username, process.env.AUTH_USERNAME || '') && timingSafe(password, process.env.AUTH_PASSWORD || '')
+}
+
+function hasAuthConfig() {
+  return Boolean(process.env.AUTH_USERNAME && process.env.AUTH_PASSWORD)
 }
 
 function createSessionToken() {
@@ -50,11 +58,16 @@ function verifySession(token) {
 
 function buildCookie(token) {
   const maxAge = Number(process.env.SESSION_MAX_AGE_DAYS || 30) * 24 * 60 * 60
-  return `${COOKIE_NAME}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secureFlag()}`
+  return `${COOKIE_NAME}=${token}; HttpOnly; SameSite=${sameSite()}; Path=/; Max-Age=${maxAge}${secureFlag()}`
 }
 
 function secureFlag() {
   return process.env.AUTH_COOKIE_SECURE === 'true' ? '; Secure' : ''
+}
+
+function sameSite() {
+  const value = process.env.AUTH_COOKIE_SAMESITE || 'Lax'
+  return ['Strict', 'Lax', 'None'].includes(value) ? value : 'Lax'
 }
 
 function sign(payload) {
