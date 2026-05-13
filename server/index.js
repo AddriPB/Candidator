@@ -64,8 +64,11 @@ app.post('/api/admin/prune', requireAuth, (_req, res) => {
   res.json({ pruned: pruneOldData(db) })
 })
 
-app.use(express.static(path.join(projectRoot, 'dist')))
-app.get(/.*/, (_req, res) => res.sendFile(path.join(projectRoot, 'dist', 'index.html')))
+const dist = path.join(projectRoot, 'dist')
+app.use('/Opportunity-Radar', express.static(dist))
+app.use(express.static(dist))
+app.get(/^\/Opportunity-Radar\/.*$/, (_req, res) => res.sendFile(path.join(dist, 'index.html')))
+app.get(/.*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')))
 
 app.use((error, _req, res, _next) => {
   console.error(error)

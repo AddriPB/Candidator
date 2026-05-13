@@ -3,14 +3,12 @@ import { useEffect, useMemo, useState } from 'react'
 const DEFAULT_API_BASE = import.meta.env.VITE_PUBLIC_API_BASE || ''
 
 export default function App() {
-  const [apiBase, setApiBase] = useState(() => localStorage.getItem('opportunity-radar-api-base') || DEFAULT_API_BASE)
-  const [draftApiBase, setDraftApiBase] = useState(apiBase)
   const [authenticated, setAuthenticated] = useState(false)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
   const [checks, setChecks] = useState([])
 
-  const api = useMemo(() => createApi(apiBase), [apiBase])
+  const api = useMemo(() => createApi(DEFAULT_API_BASE), [])
 
   useEffect(() => {
     api('/api/auth/me')
@@ -18,14 +16,6 @@ export default function App() {
       .catch(() => setAuthenticated(false))
       .finally(() => setLoading(false))
   }, [api])
-
-  async function saveApiBase(event) {
-    event.preventDefault()
-    const next = draftApiBase.trim().replace(/\/$/, '')
-    localStorage.setItem('opportunity-radar-api-base', next)
-    setApiBase(next)
-    setMessage('API enregistrée pour ce navigateur.')
-  }
 
   async function login(event) {
     event.preventDefault()
@@ -65,14 +55,6 @@ export default function App() {
         <p className="eyebrow">Radar privé</p>
         <h1>Opportunity Radar</h1>
         <p>Front statique public, données protégées par le backend du Pi.</p>
-
-        <form className="stack" onSubmit={saveApiBase}>
-          <label>
-            URL API du Pi
-            <input value={draftApiBase} onChange={(event) => setDraftApiBase(event.target.value)} placeholder="https://ton-api.example.com" />
-          </label>
-          <button type="submit">Enregistrer l'API</button>
-        </form>
 
         {!authenticated ? (
           <form className="stack" onSubmit={login}>
