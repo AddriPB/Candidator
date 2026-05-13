@@ -4,11 +4,12 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loginHandler, logoutHandler, meHandler, requireAuth } from './auth/index.js'
 import { checkSources } from './connectors/sourceChecks.js'
-import { openDatabase } from './storage/database.js'
+import { openDatabase, pruneOldData } from './storage/database.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(__dirname, '..')
 const db = openDatabase()
+const pruned = pruneOldData(db)
 const app = express()
 
 app.use(express.json({ limit: '1mb' }))
@@ -27,7 +28,7 @@ app.use((req, res, next) => {
 })
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, app: 'Opportunity Radar' })
+  res.json({ ok: true, app: 'Opportunity Radar', retentionDays: Number(process.env.DATA_RETENTION_DAYS || 90) })
 })
 
 app.get('/api/auth/me', meHandler)
@@ -59,6 +60,10 @@ app.get('/api/source-checks/latest', requireAuth, (_req, res) => {
   res.json({ checks: rows })
 })
 
+app.post('/api/admin/prune', requireAuth, (_req, res) => {
+  res.json({ pruned: pruneOldData(db) })
+})
+
 app.use(express.static(path.join(projectRoot, 'dist')))
 app.get(/.*/, (_req, res) => res.sendFile(path.join(projectRoot, 'dist', 'index.html')))
 
@@ -71,4 +76,5 @@ const host = process.env.HOST || '127.0.0.1'
 const port = Number(process.env.PORT || 4173)
 app.listen(port, host, () => {
   console.log(`Opportunity Radar API listening on http://${host}:${port}`)
+  console.log(`Retention cleanup removed ${pruned.sourceChecks} source check row(s) before ${pruned.cutoff}`)
 })
