@@ -1,0 +1,15 @@
+export const TARGET_QUERIES = [
+  'Product Owner',
+  'PO',
+  'Product Manager',
+  'PM',
+  'Business Analyst',
+  'BA',
+  'Proxy Product Owner',
+  'Proxy PO',
+  'Chef de projet digital',
+  'Consultant AMOA',
+  'AMOA',
+  'Consultant MOA',
+  'MOA',
+]

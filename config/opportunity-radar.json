@@ -1,0 +1,15 @@
+{
+  "niveau_cible": "confirmé",
+  "annees_experience_min": null,
+  "contrat": "CDI",
+  "salaire_min": null,
+  "teletravail_min_jours": null,
+  "zones": ["Paris", "Île-de-France", "hybride IDF", "full remote France"],
+  "sources_actives": ["france_travail", "adzuna", "jsearch", "careerjet"],
+  "autonomie_candidature": "validation_légère",
+  "blacklist_entreprises": [],
+  "blacklist_secteurs": [],
+  "reject_salary_below_threshold": true,
+  "keep_unknown_salary": true,
+  "daily_run_enabled": true
+}

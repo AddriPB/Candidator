@@ -4,7 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loginHandler, logoutHandler, meHandler, requireAuth } from './auth/index.js'
 import { checkSources } from './connectors/sourceChecks.js'
-import { openDatabase, pruneOldData } from './storage/database.js'
+import { openDatabase, pruneOldData, saveSourceCheckLogs } from './storage/database.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(__dirname, '..')
@@ -39,11 +39,13 @@ app.post('/api/source-check', requireAuth, async (_req, res, next) => {
   try {
     const checkedAt = new Date().toISOString()
     const checks = await checkSources()
-    const insert = db.prepare('INSERT INTO source_checks (checked_at, source, status, detail) VALUES (?, ?, ?, ?)')
-    const trx = db.transaction(() => {
-      for (const check of checks) insert.run(checkedAt, check.source, check.ok ? 'ok' : 'failed', check.detail)
-    })
-    trx()
+    saveSourceCheckLogs(db, checks.map((check) => ({
+      checkedAt,
+      source: check.source,
+      offersCount: Number.parseInt(check.detail, 10) || 0,
+      errorsCount: check.ok ? 0 : 1,
+      error: check.ok ? '' : check.detail,
+    })))
     res.json({ checkedAt, checks })
   } catch (error) {
     next(error)
