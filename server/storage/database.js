@@ -30,11 +30,13 @@ export function pruneOldData(db, retentionDays = Number(process.env.DATA_RETENTI
     const beforeRadarRuns = db.data.radarRuns.length
     const beforeOfferEmails = db.data.offerEmails.length
     const beforeApplicationEmailSends = db.data.applicationEmailSends.length
+    const beforeApplicationContacts = db.data.applicationContacts.length
     const applicationEmailCutoff = new Date(Date.now() - Math.max(days, applicationEmailBlockDays()) * 24 * 60 * 60 * 1000).toISOString()
     db.data.sourceChecks = db.data.sourceChecks.filter((row) => row.checkedAt >= cutoff)
     db.data.radarRuns = db.data.radarRuns.filter((row) => row.startedAt >= cutoff)
     db.data.offerEmails = db.data.offerEmails.filter((row) => row.runStartedAt >= cutoff)
     db.data.applicationEmailSends = db.data.applicationEmailSends.filter((row) => row.sentAt >= applicationEmailCutoff)
+    db.data.applicationContacts = db.data.applicationContacts.filter((row) => !row.updatedAt || row.updatedAt >= applicationEmailCutoff)
     writeJsonStore(db)
     return {
       cutoff,
@@ -42,6 +44,7 @@ export function pruneOldData(db, retentionDays = Number(process.env.DATA_RETENTI
       radarRuns: beforeRadarRuns - db.data.radarRuns.length,
       offerEmails: beforeOfferEmails - db.data.offerEmails.length,
       applicationEmailSends: beforeApplicationEmailSends - db.data.applicationEmailSends.length,
+      applicationContacts: beforeApplicationContacts - db.data.applicationContacts.length,
     }
   }
   const applicationEmailCutoff = new Date(Date.now() - Math.max(days, applicationEmailBlockDays()) * 24 * 60 * 60 * 1000).toISOString()
@@ -49,7 +52,8 @@ export function pruneOldData(db, retentionDays = Number(process.env.DATA_RETENTI
   const radarRuns = db.db.prepare('DELETE FROM radar_runs WHERE started_at < ?').run(cutoff).changes
   const offerEmails = db.db.prepare('DELETE FROM offer_emails WHERE run_started_at < ?').run(cutoff).changes
   const applicationEmailSends = db.db.prepare('DELETE FROM application_email_sends WHERE sent_at < ?').run(applicationEmailCutoff).changes
-  return { cutoff, sourceChecks, radarRuns, offerEmails, applicationEmailSends }
+  const applicationContacts = db.db.prepare('DELETE FROM application_contacts WHERE updated_at < ?').run(applicationEmailCutoff).changes
+  return { cutoff, sourceChecks, radarRuns, offerEmails, applicationEmailSends, applicationContacts }
 }
 
 export function saveSourceCheckLogs(db, logs) {
@@ -141,16 +145,20 @@ export function getLatestRadarOffers(db) {
 }
 
 export function getLatestApplicationCandidateOffers(db) {
-  return getApplicationEmailEligibleOffers(db)
+  return getApplicationCandidateOffers(db)
 }
 
 export function getApplicationEmailEligibleOffers(db, { since = applicationWindowStart(), now = new Date() } = {}) {
+  return getApplicationCandidateOffers(db, { since, now, requireEmail: true })
+}
+
+export function getApplicationCandidateOffers(db, { since = applicationWindowStart(), now = new Date(), requireEmail = false } = {}) {
   const rows = readRadarRuns(db)
   const offers = []
   const seen = new Set()
   for (const row of rows) {
     for (const offer of row.offers || []) {
-      if (!isApplicationEmailEligibleOffer(offer, { since, now })) continue
+      if (!isApplicationCandidateOffer(offer, { since, now, requireEmail })) continue
       const key = offerStorageKey(offer)
       if (seen.has(key)) continue
       seen.add(key)
@@ -203,11 +211,41 @@ export function getRecentApplicationEmailSends(db, cutoff) {
            sent_to AS sentTo,
            subject,
            message_id AS messageId,
+           attempt_id AS attemptId,
+           contact_email AS contactEmail,
            status,
            error
     FROM application_email_sends
     WHERE sent_at >= ?
   `).all(cutoff)
+}
+
+export function getApplicationEmailSends(db, { since = new Date(0).toISOString(), statuses = [] } = {}) {
+  if (db.kind === 'json') {
+    refreshJsonStore(db)
+    return db.data.applicationEmailSends
+      .filter((row) => row.sentAt >= since)
+      .filter((row) => statuses.length === 0 || statuses.includes(row.status))
+  }
+  const rows = db.db.prepare(`
+    SELECT sent_at AS sentAt,
+           offer_key AS offerKey,
+           offer_id AS offerId,
+           offer_title AS offerTitle,
+           company,
+           original_to AS originalTo,
+           sent_to AS sentTo,
+           subject,
+           message_id AS messageId,
+           attempt_id AS attemptId,
+           contact_email AS contactEmail,
+           status,
+           error
+    FROM application_email_sends
+    WHERE sent_at >= ?
+    ORDER BY sent_at DESC
+  `).all(since)
+  return statuses.length ? rows.filter((row) => statuses.includes(row.status)) : rows
 }
 
 export function saveApplicationEmailSend(db, row) {
@@ -219,8 +257,8 @@ export function saveApplicationEmailSend(db, row) {
   }
   db.db.prepare(`
     INSERT INTO application_email_sends (
-      sent_at, offer_key, offer_id, offer_title, company, original_to, sent_to, subject, message_id, status, error
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      sent_at, offer_key, offer_id, offer_title, company, original_to, sent_to, subject, message_id, attempt_id, contact_email, status, error
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     row.sentAt,
     row.offerKey,
@@ -231,9 +269,144 @@ export function saveApplicationEmailSend(db, row) {
     row.sentTo,
     row.subject,
     row.messageId || '',
+    row.attemptId || '',
+    row.contactEmail || '',
     row.status,
     row.error || '',
   )
+}
+
+export function getApplicationContacts(db, offerKey) {
+  if (db.kind === 'json') {
+    refreshJsonStore(db)
+    return db.data.applicationContacts
+      .filter((row) => row.offerKey === offerKey)
+      .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0) || String(a.email).localeCompare(String(b.email)))
+  }
+  return db.db.prepare(`
+    SELECT offer_key AS offerKey,
+           email,
+           method,
+           source_url AS sourceUrl,
+           confidence,
+           status,
+           last_attempt_at AS lastAttemptAt,
+           bounce_reason AS bounceReason,
+           attempts,
+           updated_at AS updatedAt
+    FROM application_contacts
+    WHERE offer_key = ?
+    ORDER BY confidence DESC, email ASC
+  `).all(offerKey)
+}
+
+export function upsertApplicationContacts(db, contacts, { now = new Date() } = {}) {
+  if (!contacts.length) return
+  const updatedAt = now.toISOString()
+  if (db.kind === 'json') {
+    refreshJsonStore(db)
+    for (const contact of contacts) {
+      const index = db.data.applicationContacts.findIndex((row) => row.offerKey === contact.offerKey && row.email === contact.email)
+      const existing = index >= 0 ? db.data.applicationContacts[index] : {}
+      const next = {
+        ...existing,
+        offerKey: contact.offerKey,
+        email: contact.email,
+        method: contact.method || existing.method || 'unknown',
+        sourceUrl: contact.sourceUrl || existing.sourceUrl || '',
+        confidence: Number(contact.confidence || existing.confidence || 0),
+        status: existing.status && existing.status !== 'candidate' ? existing.status : contact.status || 'candidate',
+        lastAttemptAt: existing.lastAttemptAt || '',
+        bounceReason: existing.bounceReason || '',
+        attempts: Number(existing.attempts || 0),
+        updatedAt,
+      }
+      if (index >= 0) db.data.applicationContacts[index] = next
+      else db.data.applicationContacts.push(next)
+    }
+    writeJsonStore(db)
+    return
+  }
+  const statement = db.db.prepare(`
+    INSERT INTO application_contacts (
+      offer_key, email, method, source_url, confidence, status, last_attempt_at, bounce_reason, attempts, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, '', '', 0, ?)
+    ON CONFLICT(offer_key, email) DO UPDATE SET
+      method = excluded.method,
+      source_url = CASE WHEN excluded.source_url != '' THEN excluded.source_url ELSE application_contacts.source_url END,
+      confidence = MAX(application_contacts.confidence, excluded.confidence),
+      status = CASE WHEN application_contacts.status = 'candidate' THEN excluded.status ELSE application_contacts.status END,
+      updated_at = excluded.updated_at
+  `)
+  const trx = db.db.transaction(() => {
+    for (const contact of contacts) {
+      statement.run(
+        contact.offerKey,
+        contact.email,
+        contact.method || 'unknown',
+        contact.sourceUrl || '',
+        Number(contact.confidence || 0),
+        contact.status || 'candidate',
+        updatedAt,
+      )
+    }
+  })
+  trx()
+}
+
+export function updateApplicationContactStatus(db, { offerKey, email, status, lastAttemptAt = '', bounceReason = '', incrementAttempts = false }) {
+  if (db.kind === 'json') {
+    refreshJsonStore(db)
+    const row = db.data.applicationContacts.find((item) => item.offerKey === offerKey && item.email === email)
+    if (row) {
+      row.status = status || row.status
+      if (lastAttemptAt) row.lastAttemptAt = lastAttemptAt
+      if (bounceReason) row.bounceReason = bounceReason
+      if (incrementAttempts) row.attempts = Number(row.attempts || 0) + 1
+      row.updatedAt = new Date().toISOString()
+      writeJsonStore(db)
+    }
+    return
+  }
+  db.db.prepare(`
+    UPDATE application_contacts
+    SET status = COALESCE(NULLIF(?, ''), status),
+        last_attempt_at = CASE WHEN ? != '' THEN ? ELSE last_attempt_at END,
+        bounce_reason = CASE WHEN ? != '' THEN ? ELSE bounce_reason END,
+        attempts = attempts + ?,
+        updated_at = ?
+    WHERE offer_key = ? AND email = ?
+  `).run(
+    status || '',
+    lastAttemptAt || '',
+    lastAttemptAt || '',
+    bounceReason || '',
+    bounceReason || '',
+    incrementAttempts ? 1 : 0,
+    new Date().toISOString(),
+    offerKey,
+    email,
+  )
+}
+
+export function updateApplicationSendStatus(db, { attemptId, status, error = '' }) {
+  if (!attemptId) return
+  if (db.kind === 'json') {
+    refreshJsonStore(db)
+    for (const row of db.data.applicationEmailSends) {
+      if (row.attemptId !== attemptId) continue
+      row.status = status || row.status
+      if (error) row.error = error
+    }
+    writeJsonStore(db)
+    return
+  }
+  db.db.prepare(`
+    UPDATE application_email_sends
+    SET status = COALESCE(NULLIF(?, ''), status),
+        error = CASE WHEN ? != '' THEN ? ELSE error END
+    WHERE attempt_id = ?
+  `).run(status || '', error || '', error || '', attemptId)
 }
 
 export function getLatestSourceChecks(db) {
@@ -298,8 +471,9 @@ function isVisibleOffer(offer) {
   return offer.verdict !== 'à rejeter' && offer.evaluation?.status !== 'à rejeter'
 }
 
-function isApplicationEmailEligibleOffer(offer, { since, now }) {
-  return isVisibleOffer(offer) && Array.isArray(offer.emails) && offer.emails.length > 0 && isRecentOffer(offer, { since, now })
+function isApplicationCandidateOffer(offer, { since, now, requireEmail = false }) {
+  if (!isVisibleOffer(offer) || !isRecentOffer(offer, { since, now })) return false
+  return !requireEmail || (Array.isArray(offer.emails) && offer.emails.length > 0)
 }
 
 function isRecentOffer(offer, { since, now }) {
@@ -388,16 +562,37 @@ function migrate(db) {
       sent_to TEXT NOT NULL,
       subject TEXT NOT NULL,
       message_id TEXT NOT NULL DEFAULT '',
+      attempt_id TEXT NOT NULL DEFAULT '',
+      contact_email TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL,
       error TEXT NOT NULL DEFAULT ''
     );
 
     CREATE INDEX IF NOT EXISTS idx_application_email_sends_offer_key_sent_at
       ON application_email_sends(offer_key, sent_at);
+
+    CREATE TABLE IF NOT EXISTS application_contacts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      offer_key TEXT NOT NULL,
+      email TEXT NOT NULL,
+      method TEXT NOT NULL,
+      source_url TEXT NOT NULL DEFAULT '',
+      confidence INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'candidate',
+      last_attempt_at TEXT NOT NULL DEFAULT '',
+      bounce_reason TEXT NOT NULL DEFAULT '',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_application_contacts_offer_email
+      ON application_contacts(offer_key, email);
   `)
 
   ensureColumn(db, 'source_checks', 'offers_count', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(db, 'source_checks', 'errors_count', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(db, 'application_email_sends', 'attempt_id', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(db, 'application_email_sends', 'contact_email', "TEXT NOT NULL DEFAULT ''")
 }
 
 function ensureColumn(db, table, column, definition) {
@@ -427,6 +622,7 @@ function normalizeJsonStore(data) {
     radarRuns: Array.isArray(data?.radarRuns) ? data.radarRuns : [],
     offerEmails: Array.isArray(data?.offerEmails) ? data.offerEmails : [],
     applicationEmailSends: Array.isArray(data?.applicationEmailSends) ? data.applicationEmailSends : [],
+    applicationContacts: Array.isArray(data?.applicationContacts) ? data.applicationContacts : [],
   }
 }
 

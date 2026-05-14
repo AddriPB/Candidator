@@ -9,8 +9,11 @@ import { normalizeOffer } from '../server/radar/normalizer.js'
 import { scoreOffer } from '../server/radar/scorer.js'
 import { loginHandler, requireAuth } from '../server/auth/index.js'
 import { buildApplicationMessage, sendDailyApplicationEmails } from '../server/applications/emailer.js'
+import { discoverContactsForOffer, extractMailtoEmails, inferRecruiterLocals } from '../server/applications/contactDiscovery.js'
+import { processApplicationBounces } from '../server/applications/bounces.js'
 import { cvPseudo, getCvState, saveApplicationMailTemplate, saveCvUpload, setActiveCv } from '../server/cv/storage.js'
-import { getApplicationEmailEligibleOffers, getLatestRadarOffers, saveRadarRun, saveSourceCheckLogs } from '../server/storage/database.js'
+import { getApplicationContacts, getApplicationEmailEligibleOffers, getLatestRadarOffers, saveRadarRun, saveSourceCheckLogs } from '../server/storage/database.js'
+import { nightlyRunSucceeded, recordNightlyAttempt, shouldRunNightlyRadar } from '../server/radar/nightlySchedule.js'
 
 const baseConfig = {
   contrat: 'CDI',
@@ -294,6 +297,80 @@ test('stockage JSON: liste les offres avec email publiees depuis moins de 12 moi
   assert.deepEqual(result.offers.map((item) => item.id).sort(), ['recent-apply', 'recent-watch'])
 })
 
+test('planification nocturne: autorise le premier appel pendant la nuit', () => {
+  const decision = shouldRunNightlyRadar({
+    schedule: nightlySchedule(),
+    state: {},
+    now: new Date('2026-05-14T00:15:00.000Z'),
+  })
+
+  assert.equal(decision.run, true)
+  assert.equal(decision.date, '2026-05-14')
+})
+
+test('planification nocturne: bloque les retries avant 2 heures', () => {
+  const state = recordNightlyAttempt({
+    state: {},
+    date: '2026-05-14',
+    startedAt: '2026-05-14T00:15:00.000Z',
+    status: 'failed',
+    detail: 'HTTP 429',
+  })
+
+  const decision = shouldRunNightlyRadar({
+    schedule: nightlySchedule(),
+    state,
+    now: new Date('2026-05-14T00:45:00.000Z'),
+  })
+
+  assert.equal(decision.run, false)
+  assert.match(decision.reason, /retry not due/)
+})
+
+test('planification nocturne: ne retente pas après 3 échecs le même jour', () => {
+  let state = {}
+  for (const startedAt of [
+    '2026-05-14T00:15:00.000Z',
+    '2026-05-14T02:15:00.000Z',
+    '2026-05-14T04:15:00.000Z',
+  ]) {
+    state = recordNightlyAttempt({ state, date: '2026-05-14', startedAt, status: 'failed', detail: 'HTTP 500' })
+  }
+
+  const decision = shouldRunNightlyRadar({
+    schedule: nightlySchedule(),
+    state,
+    now: new Date('2026-05-14T04:30:00.000Z'),
+  })
+
+  assert.equal(decision.run, false)
+  assert.match(decision.reason, /daily failure cap/)
+})
+
+test('planification nocturne: un succès bloque les créneaux suivants', () => {
+  const state = recordNightlyAttempt({
+    state: {},
+    date: '2026-05-14',
+    startedAt: '2026-05-14T00:15:00.000Z',
+    status: 'success',
+    detail: 'ok',
+  })
+
+  const decision = shouldRunNightlyRadar({
+    schedule: nightlySchedule(),
+    state,
+    now: new Date('2026-05-14T02:15:00.000Z'),
+  })
+
+  assert.equal(decision.run, false)
+  assert.equal(decision.reason, 'already succeeded today')
+})
+
+test('planification nocturne: une erreur source rend le run incomplet', () => {
+  assert.equal(nightlyRunSucceeded({ logs: [{ source: 'adzuna', errorsCount: 0 }] }), true)
+  assert.equal(nightlyRunSucceeded({ logs: [{ source: 'adzuna', errorsCount: 1 }] }), false)
+})
+
 test('auth: accepte le token de session via Authorization Bearer', () => {
   withAuthEnv(() => {
     const loginRes = mockResponse()
@@ -527,11 +604,186 @@ test('candidatures: bloque un nouvel envoi sur la meme annonce pendant 12 mois',
   })
 })
 
+test('contacts recruteurs: extrait mailto et rejette les faux emails', async () => {
+  const contacts = await discoverContactsForOffer(offer({
+    id: 'offer:contact',
+    emails: ['votre.nom@email.com', 'talent@example.fr'],
+    raw: {
+      contact: { coordonnees1: 'https://jobs.example.fr/apply' },
+      employer_website: 'https://example.fr',
+    },
+  }), {
+    offerKey: 'offer:contact',
+    fetchPages: true,
+    fetcher: async () => ({
+      ok: true,
+      headers: new Map([['content-type', 'text/html']]),
+      text: async () => '<a href="mailto:recrutement@example.fr">RH</a> john.doe@example.com',
+    }),
+  })
+
+  assert.deepEqual(contacts.map((item) => item.email).slice(0, 2), ['talent@example.fr', 'recrutement@example.fr'])
+  assert.equal(contacts.some((item) => item.email === 'votre.nom@email.com'), false)
+  assert.deepEqual(extractMailtoEmails('<a href="mailto:jobs@example.fr?subject=Candidature">'), ['jobs@example.fr'])
+})
+
+test('contacts recruteurs: infere des adresses depuis un recruteur public', () => {
+  const locals = inferRecruiterLocals(offer({
+    raw: { contact: { nom: 'ACCESSOL - Mme Laura Letreguilly' } },
+  }))
+
+  assert.ok(locals.includes('laura.letreguilly'))
+  assert.ok(locals.includes('l.letreguilly'))
+})
+
+test('candidatures: tente une autre adresse apres rejet SMTP 5xx immediat', async () => {
+  await withCvEnv(async () => {
+    saveCvUpload({
+      originalName: 'CV Produit.pdf',
+      buffer: Buffer.from('%PDF-1.4 test'),
+    })
+    saveApplicationMailTemplate({
+      firstName: 'Adrien',
+      lastName: 'Pujol',
+      phone: '06 00 00 00 00',
+      subjectTemplate: 'Candidature : [Intitulé du poste]',
+      bodyTemplate: 'Bonjour [Intitulé du poste]',
+    })
+
+    const jsonPath = makeJsonStore({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [], applicationContacts: [] })
+    const db = { kind: 'json', path: jsonPath, data: JSON.parse(fs.readFileSync(jsonPath, 'utf8')) }
+    const sent = []
+    const summary = await sendDailyApplicationEmails({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'live', APPLICATION_EMAIL_MAX_CONTACTS_PER_OFFER: '3' },
+      mailer: async (message) => {
+        sent.push(message)
+        if (message.to === 'bad@example.fr') {
+          const error = new Error('550 5.1.1 user unknown')
+          error.responseCode = 550
+          throw error
+        }
+        return { messageId: `message-${sent.length}` }
+      },
+      logger: silentLogger(),
+      offers: [
+        offer({ id: 'offer:retry', title: 'Product Owner', verdict: 'à candidater', emails: ['bad@example.fr', 'good@example.fr'] }),
+      ],
+      startedAt: '2026-05-14T07:55:00.000Z',
+    })
+
+    assert.equal(summary.sent, 1)
+    assert.equal(summary.failed, 0)
+    assert.deepEqual(sent.map((message) => message.to), ['bad@example.fr', 'good@example.fr'])
+    const contacts = getApplicationContacts(db, 'link:https://example.test/job/1')
+    assert.equal(contacts.find((item) => item.email === 'bad@example.fr')?.status, 'invalid')
+    assert.equal(contacts.find((item) => item.email === 'good@example.fr')?.status, 'sent_pending_delivery')
+  })
+})
+
+test('candidatures: respecte le quota quotidien live', async () => {
+  await withCvEnv(async () => {
+    saveCvUpload({
+      originalName: 'CV Produit.pdf',
+      buffer: Buffer.from('%PDF-1.4 test'),
+    })
+    saveApplicationMailTemplate({
+      firstName: 'Adrien',
+      lastName: 'Pujol',
+      phone: '06 00 00 00 00',
+      subjectTemplate: 'Candidature : [Intitulé du poste]',
+      bodyTemplate: 'Bonjour [Intitulé du poste]',
+    })
+
+    const jsonPath = makeJsonStore({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [], applicationContacts: [] })
+    const db = { kind: 'json', path: jsonPath, data: JSON.parse(fs.readFileSync(jsonPath, 'utf8')) }
+    const sent = []
+    const summary = await sendDailyApplicationEmails({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'live', APPLICATION_EMAIL_DAILY_LIMIT: '1' },
+      mailer: async (message) => {
+        sent.push(message)
+        return { messageId: `message-${sent.length}` }
+      },
+      logger: silentLogger(),
+      offers: [
+        offer({ id: 'offer:1', link: 'https://example.test/job/1', verdict: 'à candidater', emails: ['a@example.fr'] }),
+        offer({ id: 'offer:2', link: 'https://example.test/job/2', verdict: 'à candidater', emails: ['b@example.fr'] }),
+      ],
+      startedAt: '2026-05-14T07:55:00.000Z',
+    })
+
+    assert.equal(summary.sent, 1)
+    assert.equal(summary.skipped, 1)
+    assert.equal(sent.length, 1)
+    assert.ok(summary.results.some((row) => row.reason === 'daily_limit_reached'))
+  })
+})
+
+test('rebonds: marque un hard bounce et accepte les envois sans rebond apres grace', async () => {
+  await withCvEnv(async () => {
+    saveCvUpload({
+      originalName: 'CV Produit.pdf',
+      buffer: Buffer.from('%PDF-1.4 test'),
+    })
+    saveApplicationMailTemplate({
+      firstName: 'Adrien',
+      lastName: 'Pujol',
+      phone: '06 00 00 00 00',
+      subjectTemplate: 'Candidature : [Intitulé du poste]',
+      bodyTemplate: 'Bonjour [Intitulé du poste]',
+    })
+
+    const jsonPath = makeJsonStore({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [], applicationContacts: [] })
+    const db = { kind: 'json', path: jsonPath, data: JSON.parse(fs.readFileSync(jsonPath, 'utf8')) }
+    const summary = await sendDailyApplicationEmails({
+      db,
+      now: new Date('2026-05-10T08:00:00.000Z'),
+      env: {
+        APPLICATION_EMAIL_DELIVERY_MODE: 'live',
+        APPLICATION_EMAIL_BOUNCE_ADDRESS: 'bounce@example.fr',
+      },
+      mailer: async () => ({ messageId: 'message-1' }),
+      logger: silentLogger(),
+      offers: [
+        offer({ id: 'offer:bounce', link: 'https://example.test/job/bounce', verdict: 'à candidater', collectedAt: '2026-05-10T07:00:00.000Z', emails: ['bad@example.fr'] }),
+      ],
+      startedAt: '2026-05-10T07:55:00.000Z',
+    })
+
+    const attemptId = summary.results[0].attemptId
+    const bounceSummary = await processApplicationBounces({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: { APPLICATION_EMAIL_DELIVERY_GRACE_HOURS: '72' },
+      logger: silentLogger(),
+      messages: [`Final-Recipient: rfc822; bad@example.fr\nStatus: 5.1.1\nX-Opportunity-Radar-Attempt: ${attemptId}`],
+    })
+
+    assert.equal(bounceSummary.hardBounced, 1)
+    const contacts = getApplicationContacts(db, 'link:https://example.test/job/bounce')
+    assert.equal(contacts[0].status, 'hard_bounced')
+  })
+})
+
 function makeJsonStore(data) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-'))
   const jsonPath = path.join(dir, 'store.json')
   fs.writeFileSync(jsonPath, `${JSON.stringify(data, null, 2)}\n`)
   return jsonPath
+}
+
+function nightlySchedule(overrides = {}) {
+  return {
+    timezone: 'Europe/Paris',
+    night_hours: [2, 4, 6],
+    retry_interval_hours: 2,
+    max_failures_per_day: 3,
+    state_path: './data/radar-nightly-state.json',
+    ...overrides,
+  }
 }
 
 function withAuthEnv(fn) {

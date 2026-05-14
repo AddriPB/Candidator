@@ -23,7 +23,7 @@ export function createSmtpTransport(env = process.env) {
   })
 }
 
-export async function sendEmail({ to, subject, text, html, attachments = [] }, env = process.env) {
+export async function sendEmail({ to, subject, text, html, attachments = [], envelope = null, dsn = null }, env = process.env) {
   if (!to) throw new Error('Destinataire manquant.')
   if (!subject) throw new Error('Objet manquant.')
   if (!text && !html) throw new Error('Message manquant.')
@@ -36,5 +36,7 @@ export async function sendEmail({ to, subject, text, html, attachments = [] }, e
     text,
     html,
     attachments,
+    ...(envelope ? { envelope } : {}),
+    ...(dsn ? { dsn } : {}),
   })
 }

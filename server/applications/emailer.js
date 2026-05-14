@@ -2,10 +2,15 @@ import path from 'node:path'
 import { sendEmail } from '../email/smtp.js'
 import { getCvState } from '../cv/storage.js'
 import { stableHash } from '../radar/hash.js'
+import { chooseNextContact, discoverContactsForOffer } from './contactDiscovery.js'
 import {
-  getApplicationEmailEligibleOffers,
+  getApplicationCandidateOffers,
+  getApplicationContacts,
+  getApplicationEmailSends,
   getRecentApplicationEmailSends,
   saveApplicationEmailSend,
+  updateApplicationContactStatus,
+  upsertApplicationContacts,
 } from '../storage/database.js'
 
 const TITLE_PLACEHOLDER = '[Intitulé du poste]'
@@ -22,13 +27,17 @@ export async function sendDailyApplicationEmails({
 } = {}) {
   if (!db) throw new Error('Base de donnees manquante.')
 
-  const source = offers ? { startedAt, offers: offers.filter((offer) => isApplicationEmailEligibleOffer(offer, { now, env })) } : getApplicationEmailEligibleOffers(db, { now })
+  const source = offers ? { startedAt, offers: offers.filter((offer) => isApplicationCandidateOffer(offer, { now, env })) } : getApplicationCandidateOffers(db, { now })
   const cvState = getCvState()
   const context = buildApplicationContext(cvState)
   const cutoff = blockCutoff(now, env).toISOString()
-  const sentOfferKeys = new Set(getRecentApplicationEmailSends(db, cutoff)
-    .filter((row) => row.status === 'sent')
+  const recentSends = getRecentApplicationEmailSends(db, cutoff)
+  const sentOfferKeys = new Set(recentSends
+    .filter((row) => ['sent', 'sent_pending_delivery', 'delivered_or_no_bounce_after_grace_period'].includes(row.status))
     .map((row) => row.offerKey))
+  const dayStart = startOfUtcDay(now).toISOString()
+  let liveSendsToday = recentSends.filter((row) => row.sentAt >= dayStart && isAcceptedSend(row)).length
+  const dailyLimit = positiveInteger(env.APPLICATION_EMAIL_DAILY_LIMIT, 20)
 
   const summary = {
     startedAt: source.startedAt || null,
@@ -54,59 +63,117 @@ export async function sendDailyApplicationEmails({
       summary.results.push({ status: 'skipped', reason: 'already_sent_recently', offerId: offer.id, offerKey, offerTitle: offer.title })
       continue
     }
+    if (liveSendsToday >= dailyLimit) {
+      summary.skipped += 1
+      summary.results.push({ status: 'skipped', reason: 'daily_limit_reached', offerId: offer.id, offerKey, offerTitle: offer.title })
+      continue
+    }
 
-    const originalRecipients = normalizedEmails(offer.emails)
-    const sentTo = applicationRecipient(originalRecipients, env)
     const message = buildApplicationMessage({ offer, context })
-    const sentAt = now.toISOString()
 
-    try {
-      const result = await mailer({
-        to: sentTo,
-        subject: message.subject,
-        text: message.text,
-        attachments: [
-          {
-            filename: context.cvFileName,
-            path: context.cvPath,
-          },
-        ],
-      }, env)
-      const row = {
-        sentAt,
-        offerKey,
-        offerId: String(offer.id || ''),
-        offerTitle: String(offer.title || ''),
-        company: String(offer.company || ''),
-        originalTo: originalRecipients.join(', '),
-        sentTo: Array.isArray(sentTo) ? sentTo.join(', ') : sentTo,
-        subject: message.subject,
-        messageId: result?.messageId || '',
-        status: 'sent',
-        error: '',
+    const discovered = await discoverContactsForOffer(offer, { offerKey, env, now })
+    upsertApplicationContacts(db, discovered, { now })
+    let contacts = getApplicationContacts(db, offerKey)
+    if (contacts.length === 0) {
+      summary.skipped += 1
+      summary.results.push({ status: 'skipped', reason: 'no_contact_found', offerId: offer.id, offerKey, offerTitle: offer.title })
+      continue
+    }
+
+    let sent = false
+    let immediateFailures = 0
+    while (!sent && liveSendsToday < dailyLimit) {
+      const sends = getApplicationEmailSends(db, { since: cutoff }).filter((row) => row.offerKey === offerKey)
+      const contact = chooseNextContact({ contacts, sends, now, env })
+      if (!contact) break
+
+      const sentAt = now.toISOString()
+      const attemptId = buildAttemptId({ offerKey, email: contact.email, now })
+      const sentTo = applicationRecipient([contact.email], env)
+      const bounceAddress = buildBounceAddress(attemptId, env)
+
+      try {
+        const result = await mailer({
+          to: sentTo,
+          subject: message.subject,
+          text: message.text,
+          attachments: [
+            {
+              filename: context.cvFileName,
+              path: context.cvPath,
+            },
+          ],
+          ...(bounceAddress ? {
+            envelope: { from: bounceAddress, to: Array.isArray(sentTo) ? sentTo : [sentTo] },
+            dsn: { id: attemptId, return: 'headers', notify: ['failure', 'delay'], recipient: contact.email },
+          } : {}),
+        }, env)
+        const row = {
+          sentAt,
+          offerKey,
+          offerId: String(offer.id || ''),
+          offerTitle: String(offer.title || ''),
+          company: String(offer.company || ''),
+          originalTo: contact.email,
+          sentTo: Array.isArray(sentTo) ? sentTo.join(', ') : sentTo,
+          subject: message.subject,
+          messageId: result?.messageId || '',
+          attemptId,
+          contactEmail: contact.email,
+          status: 'sent_pending_delivery',
+          error: '',
+        }
+        saveApplicationEmailSend(db, row)
+        updateApplicationContactStatus(db, { offerKey, email: contact.email, status: 'sent_pending_delivery', lastAttemptAt: sentAt, incrementAttempts: true })
+        sentOfferKeys.add(offerKey)
+        liveSendsToday += 1
+        summary.sent += 1
+        summary.results.push({ ...row, cvFileName: context.cvFileName })
+        sent = true
+      } catch (error) {
+        const hardFailure = isHardSmtpFailure(error)
+        const status = hardFailure ? 'invalid' : 'failed'
+        const row = {
+          sentAt,
+          offerKey,
+          offerId: String(offer.id || ''),
+          offerTitle: String(offer.title || ''),
+          company: String(offer.company || ''),
+          originalTo: contact.email,
+          sentTo: Array.isArray(sentTo) ? sentTo.join(', ') : sentTo,
+          subject: message.subject,
+          messageId: '',
+          attemptId,
+          contactEmail: contact.email,
+          status,
+          error: error.message,
+        }
+        saveApplicationEmailSend(db, row)
+        updateApplicationContactStatus(db, {
+          offerKey,
+          email: contact.email,
+          status,
+          lastAttemptAt: sentAt,
+          bounceReason: error.message,
+          incrementAttempts: true,
+        })
+        immediateFailures += 1
+        contacts = getApplicationContacts(db, offerKey)
+        if (!hardFailure) {
+          summary.failed += 1
+          summary.results.push(row)
+          logger.error(`[applications] echec envoi ${offer.id}: ${error.message}`)
+          break
+        }
+        summary.results.push(row)
       }
-      saveApplicationEmailSend(db, row)
-      sentOfferKeys.add(offerKey)
-      summary.sent += 1
-      summary.results.push({ ...row, cvFileName: context.cvFileName })
-    } catch (error) {
-      const row = {
-        sentAt,
-        offerKey,
-        offerId: String(offer.id || ''),
-        offerTitle: String(offer.title || ''),
-        company: String(offer.company || ''),
-        originalTo: originalRecipients.join(', '),
-        sentTo: Array.isArray(sentTo) ? sentTo.join(', ') : sentTo,
-        subject: message.subject,
-        messageId: '',
-        status: 'failed',
-        error: error.message,
-      }
-      saveApplicationEmailSend(db, row)
+    }
+
+    if (!sent && immediateFailures > 0) {
       summary.failed += 1
-      summary.results.push(row)
-      logger.error(`[applications] echec envoi ${offer.id}: ${error.message}`)
+    } else if (!sent) {
+      summary.skipped += 1
+      summary.results.push({ status: 'skipped', reason: 'no_contact_available', offerId: offer.id, offerKey, offerTitle: offer.title })
     }
   }
 
@@ -206,17 +273,16 @@ function applicationRecipient(originalRecipients, env) {
   const mode = String(env.APPLICATION_EMAIL_DELIVERY_MODE || 'test').toLowerCase()
   const redirectTo = String(env.APPLICATION_EMAIL_REDIRECT_TO || TEST_RECIPIENT).trim()
   if (mode !== 'live') return redirectTo
-  return originalRecipients
+  return originalRecipients.length === 1 ? originalRecipients[0] : originalRecipients
 }
 
 function normalizedEmails(emails) {
   return Array.from(new Set((emails || []).map((email) => String(email || '').trim().toLowerCase()).filter(Boolean))).sort()
 }
 
-function isApplicationEmailEligibleOffer(offer, { now, env }) {
+function isApplicationCandidateOffer(offer, { now, env }) {
   const status = offer.evaluation?.status || ''
   if (offer.verdict === 'à rejeter' || status === 'à rejeter') return false
-  if (normalizedEmails(offer.emails).length === 0) return false
   const date = new Date(offer.publishedAt || offer.collectedAt || '')
   if (Number.isNaN(date.getTime())) return false
   return date >= offerWindowStart(now, env) && date <= now
@@ -242,4 +308,34 @@ function normalizeUrl(url) {
   } catch {
     return String(url || '').trim().toLowerCase()
   }
+}
+
+function buildAttemptId({ offerKey, email, now }) {
+  return stableHash(`${offerKey}|${email}|${now.toISOString()}|${Math.random()}`).slice(0, 24)
+}
+
+function buildBounceAddress(attemptId, env) {
+  const base = String(env.APPLICATION_EMAIL_BOUNCE_ADDRESS || '').trim()
+  if (!base || !base.includes('@')) return ''
+  const [local, domain] = base.split('@')
+  return `${local}+${attemptId}@${domain}`
+}
+
+function isHardSmtpFailure(error) {
+  const responseCode = Number(error?.responseCode)
+  if (Number.isFinite(responseCode) && responseCode >= 500 && responseCode < 600) return true
+  return /\b5\.\d+\.\d+\b|\b55\d\b|user unknown|mailbox unavailable|invalid recipient/i.test(String(error?.message || ''))
+}
+
+function startOfUtcDay(date) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()))
+}
+
+function positiveInteger(value, fallback) {
+  const number = Number(value)
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback
+}
+
+function isAcceptedSend(row) {
+  return ['sent_pending_delivery', 'hard_bounced', 'soft_bounced', 'retry_scheduled', 'delivered_or_no_bounce_after_grace_period'].includes(row.status)
 }

@@ -26,5 +26,32 @@ export function normalizeConfig(config) {
     reject_salary_below_threshold: config.reject_salary_below_threshold !== false,
     keep_unknown_salary: config.keep_unknown_salary !== false,
     daily_run_enabled: config.daily_run_enabled !== false,
+    daily_run_schedule: normalizeDailyRunSchedule(config.daily_run_schedule),
   }
+}
+
+export function normalizeDailyRunSchedule(schedule = {}) {
+  const nightHours = Array.isArray(schedule.night_hours)
+    ? schedule.night_hours
+      .map((hour) => Number(hour))
+      .filter((hour) => Number.isInteger(hour) && hour >= 0 && hour <= 23)
+    : [2, 4, 6]
+
+  return {
+    timezone: schedule.timezone || 'Europe/Paris',
+    night_hours: nightHours.length ? nightHours : [2, 4, 6],
+    retry_interval_hours: positiveNumber(schedule.retry_interval_hours, 2),
+    max_failures_per_day: positiveInteger(schedule.max_failures_per_day, 3),
+    state_path: schedule.state_path || './data/radar-nightly-state.json',
+  }
+}
+
+function positiveNumber(value, fallback) {
+  const normalized = Number(value)
+  return Number.isFinite(normalized) && normalized > 0 ? normalized : fallback
+}
+
+function positiveInteger(value, fallback) {
+  const normalized = Number(value)
+  return Number.isInteger(normalized) && normalized > 0 ? normalized : fallback
 }
