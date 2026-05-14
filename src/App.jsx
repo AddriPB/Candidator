@@ -363,8 +363,7 @@ function CvScreen({ apiBase, cvError, cvLoading, cvState, cvUploading, onRefresh
   const files = cvState?.files || []
   const activeFile = cvState?.activeFile || ''
   const [applicationMail, setApplicationMail] = useState(defaultApplicationMail())
-  const [previewRole, setPreviewRole] = useState('po')
-  const previewTitle = ROLE_FILTERS.find((filter) => filter.value === previewRole)?.label || ''
+  const previewTitle = 'PO / Product Owner'
   const previewSubject = renderApplicationMailTemplate(applicationMail.subjectTemplate, previewTitle)
   const previewBody = renderApplicationMailTemplate(applicationMail.bodyTemplate, previewTitle)
 
@@ -484,15 +483,8 @@ function CvScreen({ apiBase, cvError, cvLoading, cvState, cvUploading, onRefresh
           />
         </label>
 
-        <div className="toolbar mail-preview-toolbar">
-          <label>
-            Intitulé de prévisualisation
-            <select value={previewRole} onChange={(event) => setPreviewRole(event.target.value)}>
-              {ROLE_FILTERS.filter((filter) => filter.value !== 'all').map((filter) => (
-                <option key={filter.value} value={filter.value}>{filter.label}</option>
-              ))}
-            </select>
-          </label>
+        <div className="mail-save-row">
+          <p>Aperçu avec un exemple. En envoi automatique, l’intitulé vient du titre de chaque annonce.</p>
           <button type="submit" disabled={cvLoading}>
             Enregistrer le mail
           </button>

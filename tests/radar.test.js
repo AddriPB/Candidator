@@ -8,6 +8,7 @@ import { evaluateOffer } from '../server/radar/filter.js'
 import { normalizeOffer } from '../server/radar/normalizer.js'
 import { scoreOffer } from '../server/radar/scorer.js'
 import { loginHandler, requireAuth } from '../server/auth/index.js'
+import { buildApplicationMessage, sendDailyApplicationEmails } from '../server/applications/emailer.js'
 import { cvPseudo, getCvState, saveApplicationMailTemplate, saveCvUpload, setActiveCv } from '../server/cv/storage.js'
 import { getLatestRadarOffers, saveRadarRun, saveSourceCheckLogs } from '../server/storage/database.js'
 
@@ -405,6 +406,107 @@ test('cv: stocke le mail de candidature dans le dossier du pseudo', () => {
   })
 })
 
+test('candidatures: rend le mail avec le titre de chaque annonce', () => {
+  const message = buildApplicationMessage({
+    offer: offer({ title: 'Business Analyst Assurance' }),
+    context: {
+      applicationMail: {
+        subjectTemplate: 'Candidature : [Intitulé du poste]',
+        bodyTemplate: 'Bonjour, poste [Intitulé du poste].',
+      },
+    },
+  })
+
+  assert.equal(message.subject, 'Candidature : Business Analyst Assurance')
+  assert.equal(message.text, 'Bonjour, poste Business Analyst Assurance.')
+})
+
+test('candidatures: envoie un mail par annonce meme avec la meme boite mail', async () => {
+  await withCvEnv(async () => {
+    saveCvUpload({
+      originalName: 'CV Produit.pdf',
+      buffer: Buffer.from('%PDF-1.4 test'),
+    })
+    saveApplicationMailTemplate({
+      firstName: 'Adrien',
+      lastName: 'Pujol',
+      phone: '06 00 00 00 00',
+      subjectTemplate: 'Candidature : [Intitulé du poste]',
+      bodyTemplate: 'Bonjour [Intitulé du poste]\n[Prénom Nom]\n[Téléphone]',
+    })
+
+    const jsonPath = makeJsonStore({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [] })
+    const db = { kind: 'json', path: jsonPath, data: JSON.parse(fs.readFileSync(jsonPath, 'utf8')) }
+    const sent = []
+    const summary = await sendDailyApplicationEmails({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'test', APPLICATION_EMAIL_REDIRECT_TO: 'adri538.mail@gmail.com' },
+      mailer: async (message) => {
+        sent.push(message)
+        return { messageId: `message-${sent.length}` }
+      },
+      logger: silentLogger(),
+      offers: [
+        offer({ id: 'offer:1', title: 'Product Owner', link: 'https://example.test/job/1', verdict: 'à candidater', emails: ['rh@example.fr'] }),
+        offer({ id: 'offer:2', title: 'Product Manager', link: 'https://example.test/job/2', verdict: 'à candidater', emails: ['rh@example.fr'] }),
+      ],
+      startedAt: '2026-05-14T07:55:00.000Z',
+    })
+
+    assert.equal(summary.sent, 2)
+    assert.equal(sent.length, 2)
+    assert.deepEqual(sent.map((message) => message.to), ['adri538.mail@gmail.com', 'adri538.mail@gmail.com'])
+    assert.deepEqual(sent.map((message) => message.subject), [
+      'Candidature : Product Owner',
+      'Candidature : Product Manager',
+    ])
+    assert.equal(sent.every((message) => message.attachments?.[0]?.filename === 'CV Produit.pdf'), true)
+  })
+})
+
+test('candidatures: bloque un nouvel envoi sur la meme annonce pendant 12 mois', async () => {
+  await withCvEnv(async () => {
+    saveCvUpload({
+      originalName: 'CV Produit.pdf',
+      buffer: Buffer.from('%PDF-1.4 test'),
+    })
+    saveApplicationMailTemplate({
+      firstName: 'Adrien',
+      lastName: 'Pujol',
+      phone: '06 00 00 00 00',
+      subjectTemplate: 'Candidature : [Intitulé du poste]',
+      bodyTemplate: 'Bonjour [Intitulé du poste]',
+    })
+
+    const jsonPath = makeJsonStore({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [] })
+    const db = { kind: 'json', path: jsonPath, data: JSON.parse(fs.readFileSync(jsonPath, 'utf8')) }
+    const sent = []
+    const options = {
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'test', APPLICATION_EMAIL_REDIRECT_TO: 'adri538.mail@gmail.com' },
+      mailer: async (message) => {
+        sent.push(message)
+        return { messageId: `message-${sent.length}` }
+      },
+      logger: silentLogger(),
+      offers: [
+        offer({ id: 'offer:1', title: 'Product Owner', verdict: 'à candidater', emails: ['rh@example.fr'] }),
+      ],
+      startedAt: '2026-05-14T07:55:00.000Z',
+    }
+
+    const first = await sendDailyApplicationEmails(options)
+    const second = await sendDailyApplicationEmails(options)
+
+    assert.equal(first.sent, 1)
+    assert.equal(second.sent, 0)
+    assert.equal(second.skipped, 1)
+    assert.equal(sent.length, 1)
+  })
+})
+
 function makeJsonStore(data) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-'))
   const jsonPath = path.join(dir, 'store.json')
@@ -443,14 +545,21 @@ function withCvEnv(fn) {
   process.env.CV_USER_PSEUDO = ''
   process.env.AUTH_USERNAME = 'Adrien Test'
   delete process.env.OPPORTUNITY_RADAR_PRIVATE_DIR
-  try {
-    fn()
-  } finally {
+  const cleanup = () => {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }
     fs.rmSync(dir, { recursive: true, force: true })
+  }
+  try {
+    const result = fn()
+    if (result && typeof result.then === 'function') return result.finally(cleanup)
+    cleanup()
+    return result
+  } catch (error) {
+    cleanup()
+    throw error
   }
 }
 
@@ -471,5 +580,13 @@ function mockResponse() {
       this.statusCode = statusCode
       return this
     },
+  }
+}
+
+function silentLogger() {
+  return {
+    log() {},
+    warn() {},
+    error() {},
   }
 }

@@ -10,6 +10,8 @@
     "start": "node server/index.js",
     "radar:daily": "node server/cli/run-daily-radar.js",
     "radar:test": "node server/cli/run-daily-radar.js",
+    "applications:daily": "node server/cli/send-daily-applications.js",
+    "email:test": "node server/cli/send-test-email.js",
     "db:prune": "node server/cli/prune-old-data.js",
     "preview": "vite preview",
     "test": "node --test"
@@ -18,6 +20,7 @@
     "better-sqlite3": "^12.10.0",
     "dotenv": "^17.4.2",
     "express": "^4.21.2",
+    "nodemailer": "^8.0.7",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

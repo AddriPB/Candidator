@@ -29,21 +29,27 @@ export function pruneOldData(db, retentionDays = Number(process.env.DATA_RETENTI
     const beforeSourceChecks = db.data.sourceChecks.length
     const beforeRadarRuns = db.data.radarRuns.length
     const beforeOfferEmails = db.data.offerEmails.length
+    const beforeApplicationEmailSends = db.data.applicationEmailSends.length
+    const applicationEmailCutoff = new Date(Date.now() - Math.max(days, applicationEmailBlockDays()) * 24 * 60 * 60 * 1000).toISOString()
     db.data.sourceChecks = db.data.sourceChecks.filter((row) => row.checkedAt >= cutoff)
     db.data.radarRuns = db.data.radarRuns.filter((row) => row.startedAt >= cutoff)
     db.data.offerEmails = db.data.offerEmails.filter((row) => row.runStartedAt >= cutoff)
+    db.data.applicationEmailSends = db.data.applicationEmailSends.filter((row) => row.sentAt >= applicationEmailCutoff)
     writeJsonStore(db)
     return {
       cutoff,
       sourceChecks: beforeSourceChecks - db.data.sourceChecks.length,
       radarRuns: beforeRadarRuns - db.data.radarRuns.length,
       offerEmails: beforeOfferEmails - db.data.offerEmails.length,
+      applicationEmailSends: beforeApplicationEmailSends - db.data.applicationEmailSends.length,
     }
   }
+  const applicationEmailCutoff = new Date(Date.now() - Math.max(days, applicationEmailBlockDays()) * 24 * 60 * 60 * 1000).toISOString()
   const sourceChecks = db.db.prepare('DELETE FROM source_checks WHERE checked_at < ?').run(cutoff).changes
   const radarRuns = db.db.prepare('DELETE FROM radar_runs WHERE started_at < ?').run(cutoff).changes
   const offerEmails = db.db.prepare('DELETE FROM offer_emails WHERE run_started_at < ?').run(cutoff).changes
-  return { cutoff, sourceChecks, radarRuns, offerEmails }
+  const applicationEmailSends = db.db.prepare('DELETE FROM application_email_sends WHERE sent_at < ?').run(applicationEmailCutoff).changes
+  return { cutoff, sourceChecks, radarRuns, offerEmails, applicationEmailSends }
 }
 
 export function saveSourceCheckLogs(db, logs) {
@@ -134,6 +140,85 @@ export function getLatestRadarOffers(db) {
   }
 }
 
+export function getLatestApplicationCandidateOffers(db) {
+  if (db.kind === 'json') {
+    refreshJsonStore(db)
+    const row = [...db.data.radarRuns].sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))[0]
+    return {
+      startedAt: row?.startedAt || null,
+      offers: (row?.offers || []).filter(isApplicationCandidateOffer),
+    }
+  }
+  const row = db.db.prepare(`
+    SELECT started_at AS startedAt, offers_json AS offersJson
+    FROM radar_runs
+    ORDER BY started_at DESC
+    LIMIT 1
+  `).get()
+
+  if (!row) return { startedAt: null, offers: [] }
+
+  let offers = []
+  try {
+    offers = JSON.parse(row.offersJson)
+  } catch {
+    offers = []
+  }
+
+  return {
+    startedAt: row.startedAt,
+    offers: offers.filter(isApplicationCandidateOffer),
+  }
+}
+
+export function getRecentApplicationEmailSends(db, cutoff) {
+  if (db.kind === 'json') {
+    refreshJsonStore(db)
+    return db.data.applicationEmailSends.filter((row) => row.sentAt >= cutoff)
+  }
+  return db.db.prepare(`
+    SELECT sent_at AS sentAt,
+           offer_key AS offerKey,
+           offer_id AS offerId,
+           offer_title AS offerTitle,
+           company,
+           original_to AS originalTo,
+           sent_to AS sentTo,
+           subject,
+           message_id AS messageId,
+           status,
+           error
+    FROM application_email_sends
+    WHERE sent_at >= ?
+  `).all(cutoff)
+}
+
+export function saveApplicationEmailSend(db, row) {
+  if (db.kind === 'json') {
+    refreshJsonStore(db)
+    db.data.applicationEmailSends.push(row)
+    writeJsonStore(db)
+    return
+  }
+  db.db.prepare(`
+    INSERT INTO application_email_sends (
+      sent_at, offer_key, offer_id, offer_title, company, original_to, sent_to, subject, message_id, status, error
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    row.sentAt,
+    row.offerKey,
+    row.offerId,
+    row.offerTitle,
+    row.company,
+    row.originalTo,
+    row.sentTo,
+    row.subject,
+    row.messageId || '',
+    row.status,
+    row.error || '',
+  )
+}
+
 export function getLatestSourceChecks(db) {
   if (db.kind === 'json') {
     refreshJsonStore(db)
@@ -196,6 +281,10 @@ function isVisibleOffer(offer) {
   return offer.verdict !== 'à rejeter' && offer.evaluation?.status !== 'à rejeter'
 }
 
+function isApplicationCandidateOffer(offer) {
+  return isVisibleOffer(offer) && offer.verdict === 'à candidater' && Array.isArray(offer.emails) && offer.emails.length > 0
+}
+
 function migrate(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS source_checks (
@@ -228,6 +317,24 @@ function migrate(db) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_offer_emails_run_started_at ON offer_emails(run_started_at);
+
+    CREATE TABLE IF NOT EXISTS application_email_sends (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sent_at TEXT NOT NULL,
+      offer_key TEXT NOT NULL,
+      offer_id TEXT NOT NULL,
+      offer_title TEXT NOT NULL,
+      company TEXT NOT NULL,
+      original_to TEXT NOT NULL,
+      sent_to TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      message_id TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL,
+      error TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_application_email_sends_offer_key_sent_at
+      ON application_email_sends(offer_key, sent_at);
   `)
 
   ensureColumn(db, 'source_checks', 'offers_count', 'INTEGER NOT NULL DEFAULT 0')
@@ -247,7 +354,7 @@ function readJsonStore(jsonPath) {
   try {
     return normalizeJsonStore(JSON.parse(fs.readFileSync(jsonPath, 'utf8')))
   } catch {
-    return { sourceChecks: [], radarRuns: [] }
+    return normalizeJsonStore({})
   }
 }
 
@@ -260,6 +367,7 @@ function normalizeJsonStore(data) {
     sourceChecks: Array.isArray(data?.sourceChecks) ? data.sourceChecks : [],
     radarRuns: Array.isArray(data?.radarRuns) ? data.radarRuns : [],
     offerEmails: Array.isArray(data?.offerEmails) ? data.offerEmails : [],
+    applicationEmailSends: Array.isArray(data?.applicationEmailSends) ? data.applicationEmailSends : [],
   }
 }
 
@@ -279,4 +387,9 @@ function collectOfferEmails({ startedAt, offers }) {
       email,
     }))
   })
+}
+
+function applicationEmailBlockDays() {
+  const months = Number(process.env.APPLICATION_EMAIL_BLOCK_MONTHS || 12)
+  return (Number.isFinite(months) && months > 0 ? months : 12) * 31
 }

@@ -310,8 +310,11 @@ label {
   gap: 12px;
 }
 
-.mail-preview-toolbar {
-  grid-template-columns: minmax(220px, 340px) auto;
+.mail-save-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .mail-preview {
@@ -411,8 +414,12 @@ label {
   }
 
   .mail-editor-header,
-  .identity-grid,
-  .mail-preview-toolbar {
+  .identity-grid {
     grid-template-columns: 1fr;
+  }
+
+  .mail-save-row {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
