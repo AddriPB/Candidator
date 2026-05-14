@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 
 const API_BASE = String(import.meta.env.VITE_PUBLIC_API_BASE || '').replace(/\/$/, '')
+const SESSION_TOKEN_KEY = 'opportunity_radar_session_token'
 const ROLE_FILTERS = [
   { value: 'all', label: 'Tous les postes', terms: [] },
   { value: 'po', label: 'PO / Product Owner', terms: ['po', 'product owner'] },
@@ -36,7 +37,10 @@ export default function App() {
   useEffect(() => {
     api('/api/auth/me')
       .then((data) => setAuthenticated(data.authenticated))
-      .catch(() => setAuthenticated(false))
+      .catch(() => {
+        clearSessionToken()
+        setAuthenticated(false)
+      })
       .finally(() => setLoading(false))
   }, [api])
 
@@ -56,13 +60,14 @@ export default function App() {
     setMessage('')
     const form = new FormData(event.currentTarget)
     try {
-      await api('/api/auth/login', {
+      const data = await api('/api/auth/login', {
         method: 'POST',
         body: JSON.stringify({
           username: String(form.get('username') || '').trim(),
           password: form.get('password'),
         }),
       })
+      saveSessionToken(data.token)
       setAuthenticated(true)
       setMessage('Connexion active.')
       navigate('offers')
@@ -79,6 +84,7 @@ export default function App() {
       setOffers(data.offers || [])
       setOffersRunAt(data.startedAt || null)
     } catch (error) {
+      if (handleAuthError(error)) return
       setOffersError(apiErrorMessage(error, 'Impossible de charger les offres.'))
     } finally {
       setOffersLoading(false)
@@ -95,12 +101,20 @@ export default function App() {
       setChecksRunAt(data.checkedAt || null)
       setMessage('Test terminé.')
     } catch (error) {
+      if (handleAuthError(error)) return
       const errorMessage = apiErrorMessage(error, 'Impossible de tester les sources.')
       setChecksError(errorMessage)
-      setMessage(errorMessage)
     } finally {
       setChecksLoading(false)
     }
+  }
+
+  function handleAuthError(error) {
+    if (!(error instanceof ApiError) || error.status !== 401) return false
+    clearSessionToken()
+    setAuthenticated(false)
+    setMessage('Session expirée. Reconnecte-toi pour relancer le test.')
+    return true
   }
 
   function navigate(nextView) {
@@ -247,11 +261,14 @@ function TestScreen({ checks, checksError, checksLoading, checksRunAt, onRunSour
 function createApi(apiBase) {
   return async function api(path, options = {}) {
     let res
+    const token = readSessionToken()
+    const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) }
+    if (token) headers.Authorization = `Bearer ${token}`
     try {
       res = await fetch(`${apiBase}${path}`, {
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
         ...options,
+        credentials: 'include',
+        headers,
       })
     } catch (error) {
       throw new ApiError('network', { cause: error })
@@ -259,6 +276,31 @@ function createApi(apiBase) {
     const data = await readResponseBody(res)
     if (!res.ok) throw new ApiError('http', { status: res.status, statusText: res.statusText, data })
     return data
+  }
+}
+
+function saveSessionToken(token) {
+  if (!token) return
+  try {
+    window.localStorage.setItem(SESSION_TOKEN_KEY, token)
+  } catch {
+    // The HttpOnly cookie remains the fallback when localStorage is unavailable.
+  }
+}
+
+function readSessionToken() {
+  try {
+    return window.localStorage.getItem(SESSION_TOKEN_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+function clearSessionToken() {
+  try {
+    window.localStorage.removeItem(SESSION_TOKEN_KEY)
+  } catch {
+    // Nothing to clear if storage is unavailable.
   }
 }
 

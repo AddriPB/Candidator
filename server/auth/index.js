@@ -3,15 +3,18 @@ import crypto from 'node:crypto'
 const COOKIE_NAME = 'opportunity_radar_session'
 
 export function requireAuth(req, res, next) {
-  if (verifySession(readCookie(req))) return next()
+  if (verifySession(readSessionToken(req))) return next()
   res.status(401).json({ error: 'unauthorized' })
 }
 
 export function getAuthDiagnostics(req) {
-  const token = readCookie(req)
+  const cookieToken = readCookie(req)
+  const bearerToken = readBearerToken(req)
+  const token = cookieToken || bearerToken
   return {
     cookiePresent: Boolean(req.headers.cookie),
-    sessionCookiePresent: Boolean(token),
+    sessionCookiePresent: Boolean(cookieToken),
+    bearerPresent: Boolean(bearerToken),
     sessionValid: verifySession(token),
   }
 }
@@ -28,8 +31,9 @@ export function loginHandler(req, res) {
     return res.status(401).json({ error: 'invalid_credentials' })
   }
 
-  res.setHeader('Set-Cookie', buildCookie(req, createSessionToken()))
-  res.json({ ok: true })
+  const token = createSessionToken()
+  res.setHeader('Set-Cookie', buildCookie(req, token))
+  res.json({ ok: true, token })
 }
 
 export function logoutHandler(req, res) {
@@ -38,7 +42,7 @@ export function logoutHandler(req, res) {
 }
 
 export function meHandler(req, res) {
-  res.json({ authenticated: verifySession(readCookie(req)) })
+  res.json({ authenticated: verifySession(readSessionToken(req)) })
 }
 
 function isValidLogin(username, password) {
@@ -95,6 +99,16 @@ function readCookie(req) {
   const cookie = req.headers.cookie || ''
   const match = cookie.match(new RegExp(`(?:^|; )${COOKIE_NAME}=([^;]+)`))
   return match ? decodeURIComponent(match[1]) : ''
+}
+
+function readBearerToken(req) {
+  const authorization = String(req.headers.authorization || '')
+  const match = authorization.match(/^Bearer\s+(.+)$/i)
+  return match ? match[1].trim() : ''
+}
+
+function readSessionToken(req) {
+  return readCookie(req) || readBearerToken(req)
 }
 
 function timingSafe(left, right) {

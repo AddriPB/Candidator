@@ -6,6 +6,7 @@ import path from 'node:path'
 import { dedupeOffers } from '../server/radar/dedupe.js'
 import { evaluateOffer } from '../server/radar/filter.js'
 import { scoreOffer } from '../server/radar/scorer.js'
+import { loginHandler, requireAuth } from '../server/auth/index.js'
 import { getLatestRadarOffers, saveSourceCheckLogs } from '../server/storage/database.js'
 
 const baseConfig = {
@@ -159,9 +160,85 @@ test('stockage JSON: une écriture API ne supprime pas un run ajouté sur disque
   assert.equal(stored.sourceChecks.length, 1)
 })
 
+test('auth: accepte le token de session via Authorization Bearer', () => {
+  withAuthEnv(() => {
+    const loginRes = mockResponse()
+    loginHandler({
+      body: { username: 'adrien', password: 'secret' },
+      headers: {},
+      secure: true,
+    }, loginRes)
+
+    assert.equal(loginRes.statusCode, 200)
+    assert.ok(loginRes.body.token)
+
+    let passed = false
+    const authRes = mockResponse()
+    requireAuth({
+      headers: { authorization: `Bearer ${loginRes.body.token}` },
+    }, authRes, () => {
+      passed = true
+    })
+
+    assert.equal(passed, true)
+    assert.equal(authRes.statusCode, 200)
+  })
+})
+
+test('auth: rejette une requête protégée sans cookie ni Bearer', () => {
+  withAuthEnv(() => {
+    const res = mockResponse()
+    requireAuth({ headers: {} }, res, () => {
+      throw new Error('unexpected auth')
+    })
+
+    assert.equal(res.statusCode, 401)
+    assert.deepEqual(res.body, { error: 'unauthorized' })
+  })
+})
+
 function makeJsonStore(data) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-'))
   const jsonPath = path.join(dir, 'store.json')
   fs.writeFileSync(jsonPath, `${JSON.stringify(data, null, 2)}\n`)
   return jsonPath
+}
+
+function withAuthEnv(fn) {
+  const previous = {
+    AUTH_USERNAME: process.env.AUTH_USERNAME,
+    AUTH_PASSWORD: process.env.AUTH_PASSWORD,
+    AUTH_SESSION_SECRET: process.env.AUTH_SESSION_SECRET,
+  }
+  process.env.AUTH_USERNAME = 'adrien'
+  process.env.AUTH_PASSWORD = 'secret'
+  process.env.AUTH_SESSION_SECRET = 'test-secret'
+  try {
+    fn()
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+}
+
+function mockResponse() {
+  return {
+    body: null,
+    headers: {},
+    statusCode: 200,
+    json(body) {
+      this.body = body
+      return this
+    },
+    setHeader(name, value) {
+      this.headers[name.toLowerCase()] = value
+      return this
+    },
+    status(statusCode) {
+      this.statusCode = statusCode
+      return this
+    },
+  }
 }
