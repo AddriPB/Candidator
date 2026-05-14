@@ -14,6 +14,7 @@ import {
 } from '../storage/database.js'
 
 const TITLE_PLACEHOLDER = '[Intitulé du poste]'
+const OFFER_URL_PLACEHOLDER = '[URL de l’offre]'
 const TEST_RECIPIENT = 'adri538.mail@gmail.com'
 
 export async function sendDailyApplicationEmails({
@@ -192,9 +193,10 @@ export async function sendDailyApplicationEmails({
 
 export function buildApplicationMessage({ offer, context }) {
   const title = String(offer.title || '').trim() || 'poste propose'
+  const offerUrl = applicationOfferUrl(offer)
   return {
-    subject: renderTemplate(context.applicationMail.subjectTemplate, title),
-    text: renderTemplate(context.applicationMail.bodyTemplate, title),
+    subject: renderTemplate(context.applicationMail.subjectTemplate, title, offerUrl),
+    text: ensureOfferUrlLine(renderTemplate(context.applicationMail.bodyTemplate, title, offerUrl), offerUrl),
   }
 }
 
@@ -274,8 +276,30 @@ function hydrateIdentity(applicationMail) {
   }
 }
 
-function renderTemplate(template, title) {
-  return String(template || '').replaceAll(TITLE_PLACEHOLDER, title)
+function renderTemplate(template, title, offerUrl = '') {
+  return String(template || '')
+    .replaceAll(TITLE_PLACEHOLDER, title)
+    .replaceAll(OFFER_URL_PLACEHOLDER, offerUrl)
+}
+
+function ensureOfferUrlLine(text, offerUrl) {
+  if (!offerUrl || text.includes('Offre concernée :')) return text
+  if (text.includes('Vous trouverez mon CV en pièce jointe.')) {
+    return text.replace('Vous trouverez mon CV en pièce jointe.', `Offre concernée : ${offerUrl}\n\nVous trouverez mon CV en pièce jointe.`)
+  }
+  return `${text.trim()}\n\nOffre concernée : ${offerUrl}`
+}
+
+function applicationOfferUrl(offer) {
+  const raw = offer.raw || {}
+  return [
+    offer.link,
+    raw.urlPostulation,
+    raw.origineOffre?.urlOrigine,
+    raw.contact?.urlPostulation,
+    raw.url,
+    raw.redirect_url,
+  ].find((value) => /^https?:\/\//i.test(String(value || '').trim())) || ''
 }
 
 function applicationRecipient(originalRecipients, env) {

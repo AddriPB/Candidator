@@ -509,13 +509,13 @@ test('candidatures: rend le mail avec le titre de chaque annonce', () => {
     context: {
       applicationMail: {
         subjectTemplate: 'Candidature : [Intitulé du poste]',
-        bodyTemplate: 'Bonjour, poste [Intitulé du poste].',
+        bodyTemplate: 'Je vous adresse ma candidature pour le poste de [Intitulé du poste].\n\nVous trouverez mon CV en pièce jointe.',
       },
     },
   })
 
   assert.equal(message.subject, 'Candidature : Business Analyst Assurance')
-  assert.equal(message.text, 'Bonjour, poste Business Analyst Assurance.')
+  assert.equal(message.text, 'Je vous adresse ma candidature pour le poste de Business Analyst Assurance.\n\nOffre concernée : https://example.test/job/1\n\nVous trouverez mon CV en pièce jointe.')
 })
 
 test('candidatures: envoie un mail par annonce recente meme avec la meme boite mail', async () => {

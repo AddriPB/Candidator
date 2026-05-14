@@ -142,6 +142,8 @@ function defaultBodyTemplate({ firstName, lastName, phone }) {
 
 Je vous adresse ma candidature pour le poste de ${TITLE_PLACEHOLDER}.
 
+Offre concernée : [URL de l’offre]
+
 Vous trouverez mon CV en pièce jointe. Je suis disponible pour échanger par téléphone afin de vous présenter mon profil.
 
 Vous pouvez me joindre au ${contactPhone}.
