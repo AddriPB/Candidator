@@ -20,8 +20,12 @@ export default function App() {
   const [offers, setOffers] = useState([])
   const [offersRunAt, setOffersRunAt] = useState(null)
   const [offersLoading, setOffersLoading] = useState(false)
+  const [offersError, setOffersError] = useState('')
   const [roleFilter, setRoleFilter] = useState('all')
   const [checks, setChecks] = useState([])
+  const [checksRunAt, setChecksRunAt] = useState(null)
+  const [checksLoading, setChecksLoading] = useState(false)
+  const [checksError, setChecksError] = useState('')
 
   const api = useMemo(() => createApi(API_BASE), [])
   const filteredOffers = useMemo(
@@ -69,25 +73,33 @@ export default function App() {
 
   async function loadOffers() {
     setOffersLoading(true)
+    setOffersError('')
     try {
       const data = await api('/api/offers')
       setOffers(data.offers || [])
       setOffersRunAt(data.startedAt || null)
-    } catch {
-      setMessage('Impossible de charger les offres.')
+    } catch (error) {
+      setOffersError(apiErrorMessage(error, 'Impossible de charger les offres.'))
     } finally {
       setOffersLoading(false)
     }
   }
 
   async function runSourceCheck() {
+    setChecksLoading(true)
+    setChecksError('')
     setMessage('Test des sources en cours...')
     try {
       const data = await api('/api/source-check', { method: 'POST' })
-      setChecks(data.checks)
+      setChecks(data.checks || [])
+      setChecksRunAt(data.checkedAt || null)
       setMessage('Test terminé.')
-    } catch {
-      setMessage('Impossible de tester les sources.')
+    } catch (error) {
+      const errorMessage = apiErrorMessage(error, 'Impossible de tester les sources.')
+      setChecksError(errorMessage)
+      setMessage(errorMessage)
+    } finally {
+      setChecksLoading(false)
     }
   }
 
@@ -129,11 +141,18 @@ export default function App() {
             </nav>
 
             {view === 'test' ? (
-              <TestScreen checks={checks} onRunSourceCheck={runSourceCheck} />
+              <TestScreen
+                checks={checks}
+                checksError={checksError}
+                checksLoading={checksLoading}
+                checksRunAt={checksRunAt}
+                onRunSourceCheck={runSourceCheck}
+              />
             ) : (
               <OffersScreen
                 filteredOffers={filteredOffers}
                 offers={offers}
+                offersError={offersError}
                 offersLoading={offersLoading}
                 offersRunAt={offersRunAt}
                 onRefresh={loadOffers}
@@ -150,7 +169,7 @@ export default function App() {
   )
 }
 
-function OffersScreen({ filteredOffers, offers, offersLoading, offersRunAt, onRefresh, roleFilter, setRoleFilter }) {
+function OffersScreen({ filteredOffers, offers, offersError, offersLoading, offersRunAt, onRefresh, roleFilter, setRoleFilter }) {
   return (
     <div className="stack">
       <div className="toolbar">
@@ -171,10 +190,12 @@ function OffersScreen({ filteredOffers, offers, offersLoading, offersRunAt, onRe
         {offersRunAt && <span>Dernier run : {formatDateTime(offersRunAt)}</span>}
       </div>
 
+      {offersError && <div className="error">{offersError}</div>}
+
       {offersLoading ? (
         <p>Chargement des offres...</p>
       ) : offers.length === 0 ? (
-        <div className="empty">Aucune offre disponible. Lance un run radar pour alimenter la liste.</div>
+        <div className="empty">Aucune offre disponible dans le dernier résultat d'API.</div>
       ) : filteredOffers.length === 0 ? (
         <div className="empty">Aucune offre ne correspond à ce filtre.</div>
       ) : (
@@ -186,6 +207,8 @@ function OffersScreen({ filteredOffers, offers, offersLoading, offersRunAt, onRe
                 <p>{offer.company || 'Entreprise non renseignée'} · {offer.location || 'Lieu non renseigné'}</p>
               </div>
               <div className="meta">
+                <span>{formatSources(offer)}</span>
+                {formatOfferDate(offer) && <span>{formatOfferDate(offer)}</span>}
                 {offer.verdict && <span>{offer.verdict}</span>}
                 {Number.isFinite(offer.score) && <span>{offer.score}/100</span>}
                 {offer.remote && <span>{offer.remote}</span>}
@@ -200,15 +223,20 @@ function OffersScreen({ filteredOffers, offers, offersLoading, offersRunAt, onRe
   )
 }
 
-function TestScreen({ checks, onRunSourceCheck }) {
+function TestScreen({ checks, checksError, checksLoading, checksRunAt, onRunSourceCheck }) {
   return (
     <div className="stack">
-      <button type="button" onClick={onRunSourceCheck}>Tester les API emploi</button>
+      <button type="button" onClick={onRunSourceCheck} disabled={checksLoading}>
+        {checksLoading ? 'Test en cours...' : 'Tester les API emploi'}
+      </button>
+      {checksRunAt && <p>Dernier test : {formatDateTime(checksRunAt)}</p>}
+      {checksError && <div className="error">{checksError}</div>}
       <div className="checks">
         {checks.map((check) => (
           <div className={`check ${check.ok ? 'ok' : 'fail'}`} key={check.source}>
             <strong>{check.source}</strong>
             <span>{check.ok ? 'OK' : 'Échec'}</span>
+            {check.detail && <small>{check.detail}</small>}
           </div>
         ))}
       </div>
@@ -228,9 +256,17 @@ function createApi(apiBase) {
     } catch (error) {
       throw new ApiError('network', { cause: error })
     }
-    if (!res.ok) throw new ApiError('http', { status: res.status })
-    return res.json()
+    const data = await readResponseBody(res)
+    if (!res.ok) throw new ApiError('http', { status: res.status, statusText: res.statusText, data })
+    return data
   }
+}
+
+async function readResponseBody(res) {
+  const contentType = res.headers.get('content-type') || ''
+  if (contentType.includes('application/json')) return res.json()
+  const text = await res.text()
+  return text ? { message: text } : null
 }
 
 function currentView() {
@@ -269,6 +305,17 @@ function formatDateTime(value) {
   }).format(new Date(value))
 }
 
+function formatOfferDate(offer) {
+  const value = offer.publishedAt || offer.collectedAt
+  if (!value) return ''
+  return formatDateTime(value)
+}
+
+function formatSources(offer) {
+  const sources = Array.isArray(offer.sources) && offer.sources.length > 0 ? offer.sources : [offer.source].filter(Boolean)
+  return sources.length > 0 ? sources.join(', ') : 'Source inconnue'
+}
+
 function formatSalary(offer) {
   const currency = offer.currency || 'EUR'
   if (offer.salaryMin && offer.salaryMax) return `${formatMoney(offer.salaryMin, currency)} - ${formatMoney(offer.salaryMax, currency)}`
@@ -291,11 +338,28 @@ function loginErrorMessage(error) {
   return 'Connexion impossible.'
 }
 
+function apiErrorMessage(error, fallback) {
+  if (!(error instanceof ApiError)) return fallback
+  if (error.kind === 'network') {
+    const target = API_BASE || window.location.origin
+    return `${fallback} Erreur réseau ou CORS vers ${target}. Vérifie VITE_PUBLIC_API_BASE et CORS_ORIGINS.`
+  }
+  const backendMessage = extractBackendMessage(error.data)
+  return `${fallback} HTTP ${error.status}${backendMessage ? ` - ${backendMessage}` : ''}`
+}
+
+function extractBackendMessage(data) {
+  if (!data || typeof data !== 'object') return ''
+  return String(data.message || data.error || data.detail || '').trim()
+}
+
 class ApiError extends Error {
   constructor(kind, options = {}) {
     super(kind === 'http' ? `HTTP ${options.status}` : 'Network error', options)
     this.name = 'ApiError'
     this.kind = kind
     this.status = options.status
+    this.statusText = options.statusText
+    this.data = options.data
   }
 }

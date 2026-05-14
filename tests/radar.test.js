@@ -1,8 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { dedupeOffers } from '../server/radar/dedupe.js'
 import { evaluateOffer } from '../server/radar/filter.js'
 import { scoreOffer } from '../server/radar/scorer.js'
+import { getLatestRadarOffers, saveSourceCheckLogs } from '../server/storage/database.js'
 
 const baseConfig = {
   contrat: 'CDI',
@@ -114,3 +118,50 @@ test('déduplication: fusionne deux offres avec le même lien', () => {
   assert.equal(result.duplicates, 1)
   assert.deepEqual(result.offers[0].sources.sort(), ['adzuna', 'jsearch'])
 })
+
+test('stockage JSON: relit les runs écrits par un autre process', () => {
+  const jsonPath = makeJsonStore({
+    sourceChecks: [],
+    radarRuns: [{
+      startedAt: '2026-05-14T05:15:06.048Z',
+      offers: [offer({ id: 'json:1', title: 'Product Manager' })],
+    }],
+  })
+  const staleDb = { kind: 'json', path: jsonPath, data: { sourceChecks: [], radarRuns: [] } }
+
+  const latest = getLatestRadarOffers(staleDb)
+
+  assert.equal(latest.startedAt, '2026-05-14T05:15:06.048Z')
+  assert.equal(latest.offers.length, 1)
+  assert.equal(latest.offers[0].title, 'Product Manager')
+})
+
+test('stockage JSON: une écriture API ne supprime pas un run ajouté sur disque', () => {
+  const jsonPath = makeJsonStore({
+    sourceChecks: [],
+    radarRuns: [{
+      startedAt: '2026-05-14T05:15:06.048Z',
+      offers: [offer({ id: 'json:1' })],
+    }],
+  })
+  const staleDb = { kind: 'json', path: jsonPath, data: { sourceChecks: [], radarRuns: [] } }
+
+  saveSourceCheckLogs(staleDb, [{
+    checkedAt: '2026-05-14T06:00:00.000Z',
+    source: 'adzuna',
+    offersCount: 12,
+    errorsCount: 0,
+    error: '',
+  }])
+
+  const stored = JSON.parse(fs.readFileSync(jsonPath, 'utf8'))
+  assert.equal(stored.radarRuns.length, 1)
+  assert.equal(stored.sourceChecks.length, 1)
+})
+
+function makeJsonStore(data) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-'))
+  const jsonPath = path.join(dir, 'store.json')
+  fs.writeFileSync(jsonPath, `${JSON.stringify(data, null, 2)}\n`)
+  return jsonPath
+}

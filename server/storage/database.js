@@ -25,6 +25,7 @@ export function pruneOldData(db, retentionDays = Number(process.env.DATA_RETENTI
   const days = Number.isFinite(retentionDays) && retentionDays > 0 ? retentionDays : 90
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
   if (db.kind === 'json') {
+    refreshJsonStore(db)
     const beforeSourceChecks = db.data.sourceChecks.length
     const beforeRadarRuns = db.data.radarRuns.length
     db.data.sourceChecks = db.data.sourceChecks.filter((row) => row.checkedAt >= cutoff)
@@ -43,6 +44,7 @@ export function pruneOldData(db, retentionDays = Number(process.env.DATA_RETENTI
 
 export function saveSourceCheckLogs(db, logs) {
   if (db.kind === 'json') {
+    refreshJsonStore(db)
     for (const log of logs) {
       db.data.sourceChecks.push({
         checkedAt: log.checkedAt,
@@ -87,6 +89,7 @@ export function saveRadarRun(db, { startedAt, summary, logs, offers, reports }) 
 
 export function getLatestRadarOffers(db) {
   if (db.kind === 'json') {
+    refreshJsonStore(db)
     const row = [...db.data.radarRuns].sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))[0]
     return { startedAt: row?.startedAt || null, offers: (row?.offers || []).map(toPublicOffer) }
   }
@@ -114,6 +117,7 @@ export function getLatestRadarOffers(db) {
 
 export function getLatestSourceChecks(db) {
   if (db.kind === 'json') {
+    refreshJsonStore(db)
     const latest = db.data.sourceChecks.reduce((max, row) => row.checkedAt > max ? row.checkedAt : max, '')
     return db.data.sourceChecks
       .filter((row) => row.checkedAt === latest)
@@ -205,9 +209,20 @@ function requireBetterSqlite() {
 
 function readJsonStore(jsonPath) {
   try {
-    return JSON.parse(fs.readFileSync(jsonPath, 'utf8'))
+    return normalizeJsonStore(JSON.parse(fs.readFileSync(jsonPath, 'utf8')))
   } catch {
     return { sourceChecks: [], radarRuns: [] }
+  }
+}
+
+function refreshJsonStore(store) {
+  store.data = readJsonStore(store.path)
+}
+
+function normalizeJsonStore(data) {
+  return {
+    sourceChecks: Array.isArray(data?.sourceChecks) ? data.sourceChecks : [],
+    radarRuns: Array.isArray(data?.radarRuns) ? data.radarRuns : [],
   }
 }
 

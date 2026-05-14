@@ -40,6 +40,12 @@ Copier `.env.example` vers `.env` sur le Pi et renseigner les valeurs privées :
 - `DATABASE_PATH`
 - `RADAR_OUTPUT_DIR`
 - `OPPORTUNITY_RADAR_CONFIG`
+- `CORS_ORIGINS` : origine(s) front autorisée(s), par exemple
+  `https://addripb.github.io`
+- `AUTH_COOKIE_SAMESITE` : utiliser `None` si le front GitHub Pages appelle
+  une API sur un autre domaine
+- `AUTH_COOKIE_SECURE` : utiliser `true` avec `AUTH_COOKIE_SAMESITE=None`
+  derrière HTTPS
 
 Ne pas publier `.env`, la base SQLite, les rapports générés ni les logs.
 

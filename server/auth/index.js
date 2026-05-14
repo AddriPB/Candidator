@@ -7,6 +7,15 @@ export function requireAuth(req, res, next) {
   res.status(401).json({ error: 'unauthorized' })
 }
 
+export function getAuthDiagnostics(req) {
+  const token = readCookie(req)
+  return {
+    cookiePresent: Boolean(req.headers.cookie),
+    sessionCookiePresent: Boolean(token),
+    sessionValid: verifySession(token),
+  }
+}
+
 export function loginHandler(req, res) {
   const username = String(req.body?.username || '').trim()
   const password = String(req.body?.password || '')
@@ -19,12 +28,12 @@ export function loginHandler(req, res) {
     return res.status(401).json({ error: 'invalid_credentials' })
   }
 
-  res.setHeader('Set-Cookie', buildCookie(createSessionToken()))
+  res.setHeader('Set-Cookie', buildCookie(req, createSessionToken()))
   res.json({ ok: true })
 }
 
-export function logoutHandler(_req, res) {
-  res.setHeader('Set-Cookie', `${COOKIE_NAME}=; HttpOnly; SameSite=${sameSite()}; Path=/; Max-Age=0${secureFlag()}`)
+export function logoutHandler(req, res) {
+  res.setHeader('Set-Cookie', `${COOKIE_NAME}=; HttpOnly; SameSite=${sameSite()}; Path=/; Max-Age=0${secureFlag(req)}`)
   res.json({ ok: true })
 }
 
@@ -56,18 +65,25 @@ function verifySession(token) {
   return timingSafe(sign(`${expires}.${nonce}`), sig)
 }
 
-function buildCookie(token) {
+function buildCookie(req, token) {
   const maxAge = Number(process.env.SESSION_MAX_AGE_DAYS || 30) * 24 * 60 * 60
-  return `${COOKIE_NAME}=${token}; HttpOnly; SameSite=${sameSite()}; Path=/; Max-Age=${maxAge}${secureFlag()}`
+  return `${COOKIE_NAME}=${token}; HttpOnly; SameSite=${sameSite()}; Path=/; Max-Age=${maxAge}${secureFlag(req)}`
 }
 
-function secureFlag() {
-  return process.env.AUTH_COOKIE_SECURE === 'true' ? '; Secure' : ''
+function secureFlag(req) {
+  if (process.env.AUTH_COOKIE_SECURE === 'true') return '; Secure'
+  if (process.env.AUTH_COOKIE_SECURE === 'false') return ''
+  if (sameSite() !== 'None') return ''
+  return isSecureRequest(req) ? '; Secure' : ''
 }
 
 function sameSite() {
-  const value = process.env.AUTH_COOKIE_SAMESITE || 'Lax'
+  const value = process.env.AUTH_COOKIE_SAMESITE || (process.env.CORS_ORIGINS ? 'None' : 'Lax')
   return ['Strict', 'Lax', 'None'].includes(value) ? value : 'Lax'
+}
+
+function isSecureRequest(req) {
+  return req.secure || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https'
 }
 
 function sign(payload) {
