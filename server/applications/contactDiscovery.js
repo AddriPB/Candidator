@@ -287,7 +287,7 @@ function normalizeEmailMatches(matches) {
   return Array.from(new Set(matches.map(normalizeEmail).filter(isValidContactEmail))).sort()
 }
 
-function normalizeEmail(value) {
+export function normalizeEmail(value) {
   return String(value || '')
     .trim()
     .toLowerCase()
@@ -295,7 +295,7 @@ function normalizeEmail(value) {
     .replace(/[),.;:"'<>]+$/g, '')
 }
 
-function isValidContactEmail(email) {
+export function isValidContactEmail(email) {
   if (!email || !email.includes('@') || email.length > 254) return false
   const [local, domain] = email.split('@')
   if (!local || !domain || !domain.includes('.')) return false

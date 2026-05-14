@@ -9,6 +9,7 @@ import { normalizeOffer } from '../server/radar/normalizer.js'
 import { scoreOffer } from '../server/radar/scorer.js'
 import { loginHandler, requireAuth } from '../server/auth/index.js'
 import { buildApplicationMessage, sendDailyApplicationEmails } from '../server/applications/emailer.js'
+import { buildSpontaneousApplicationMessage, sendDailySpontaneousApplications } from '../server/applications/spontaneous.js'
 import { discoverContactsForOffer, extractMailtoEmails, inferRecruiterLocals } from '../server/applications/contactDiscovery.js'
 import { processApplicationBounces } from '../server/applications/bounces.js'
 import { cvPseudo, getCvState, saveApplicationMailTemplate, saveCvUpload, setActiveCv } from '../server/cv/storage.js'
@@ -844,11 +845,203 @@ test('rebonds: marque un hard bounce et accepte les envois sans rebond apres gra
   })
 })
 
+test('candidatures spontanees: bloque les envois hors fenetre 08h-21h59 Paris', async () => {
+  await withCvEnv(async () => {
+    setupCvForSpontaneous()
+    const db = jsonDb({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [], applicationContacts: [] })
+    const sent = []
+
+    const summary = await sendDailySpontaneousApplications({
+      db,
+      now: new Date('2026-05-14T20:00:00.000Z'),
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'live' },
+      mailer: async (message) => {
+        sent.push(message)
+        return { messageId: 'message-1' }
+      },
+      logger: silentLogger(),
+      offers: [offer({ id: 'spontaneous:window', company: 'Acme', emails: ['rh@acme.fr'] })],
+    })
+
+    assert.equal(summary.sent, 0)
+    assert.equal(summary.skipped, 1)
+    assert.equal(sent.length, 0)
+    assert.equal(summary.results[0].actionType, 'spontaneous_application')
+  })
+})
+
+test('candidatures spontanees: stop apres un succes et logge le type', async () => {
+  await withCvEnv(async () => {
+    setupCvForSpontaneous()
+    const db = jsonDb({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [], applicationContacts: [] })
+    const sent = []
+
+    const summary = await sendDailySpontaneousApplications({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'live' },
+      mailer: async (message) => {
+        sent.push(message)
+        return { messageId: `message-${sent.length}` }
+      },
+      logger: silentLogger(),
+      offers: [
+        offer({ id: 'spontaneous:1', company: 'Acme', emails: ['rh@acme.fr'] }),
+        offer({ id: 'spontaneous:2', company: 'Beta', link: 'https://example.test/job/2', emails: ['rh@beta.fr'] }),
+      ],
+    })
+
+    assert.equal(summary.sent, 1)
+    assert.equal(sent.length, 1)
+    assert.equal(summary.results[0].actionType, 'spontaneous_application')
+    assert.equal(summary.results[0].dailyStopReason, 'stop_after_1_success')
+    assert.equal(summary.results[0].company, 'Acme')
+    assert.equal(summary.results[0].contactEmail, 'rh@acme.fr')
+  })
+})
+
+test('candidatures spontanees: retry apres echec puis stop apres succes', async () => {
+  await withCvEnv(async () => {
+    setupCvForSpontaneous()
+    const db = jsonDb({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [], applicationContacts: [] })
+    const sent = []
+
+    const summary = await sendDailySpontaneousApplications({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'live' },
+      mailer: async (message) => {
+        sent.push(message)
+        if (sent.length === 1) throw new Error('SMTP timeout')
+        return { messageId: 'message-2' }
+      },
+      logger: silentLogger(),
+      offers: [offer({ id: 'spontaneous:retry', company: 'Acme', emails: ['rh@acme.fr'] })],
+    })
+
+    assert.equal(summary.failed, 1)
+    assert.equal(summary.sent, 1)
+    assert.equal(sent.length, 2)
+    assert.deepEqual(summary.results.map((row) => row.attemptOfDay), [1, 2])
+    assert.deepEqual(sent.map((message) => message.to), ['rh@acme.fr', 'rh@acme.fr'])
+  })
+})
+
+test('candidatures spontanees: stop apres 3 echecs', async () => {
+  await withCvEnv(async () => {
+    setupCvForSpontaneous()
+    const db = jsonDb({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [], applicationContacts: [] })
+    const sent = []
+
+    const summary = await sendDailySpontaneousApplications({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'live' },
+      mailer: async (message) => {
+        sent.push(message)
+        throw new Error('SMTP down')
+      },
+      logger: silentLogger(),
+      offers: [offer({ id: 'spontaneous:fail', company: 'Acme', emails: ['rh@acme.fr'] })],
+    })
+
+    assert.equal(summary.sent, 0)
+    assert.equal(summary.failed, 3)
+    assert.equal(sent.length, 3)
+    assert.equal(summary.results.at(-1).dailyStopReason, 'stop_after_3_failures')
+  })
+})
+
+test('candidatures spontanees: mail sans URL offre et contenu attendu', () => {
+  const message = buildSpontaneousApplicationMessage({
+    context: {
+      applicationMail: {
+        firstName: 'Adrien',
+        lastName: 'Pujol',
+        phone: '06 00 00 00 00',
+      },
+    },
+  })
+
+  assert.equal(message.subject, 'Candidature spontanée')
+  assert.match(message.text, /Product Owner/)
+  assert.match(message.text, /Business Analyst/)
+  assert.match(message.text, /Chef de projet MOA/)
+  assert.equal(/https?:\/\//.test(message.text), false)
+  assert.match(message.text, /06 00 00 00 00/)
+  assert.match(message.text, /Adrien Pujol/)
+})
+
+test('candidatures spontanees: ne renvoie pas a un email deja envoye', async () => {
+  await withCvEnv(async () => {
+    setupCvForSpontaneous()
+    const db = jsonDb({
+      sourceChecks: [],
+      radarRuns: [],
+      offerEmails: [],
+      applicationEmailSends: [{
+        sentAt: '2026-05-13T08:00:00.000Z',
+        actionType: 'spontaneous_application',
+        offerKey: 'spontaneous:rh@acme.fr',
+        offerId: '',
+        offerTitle: '',
+        company: 'Acme',
+        originalTo: 'rh@acme.fr',
+        sentTo: 'rh@acme.fr',
+        subject: 'Candidature spontanée',
+        messageId: 'old',
+        attemptId: 'old',
+        contactEmail: 'rh@acme.fr',
+        status: 'sent_pending_delivery',
+        error: '',
+      }],
+      applicationContacts: [],
+    })
+    const sent = []
+
+    const summary = await sendDailySpontaneousApplications({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'live' },
+      mailer: async (message) => {
+        sent.push(message)
+        return { messageId: 'message-1' }
+      },
+      logger: silentLogger(),
+      offers: [offer({ id: 'spontaneous:duplicate', company: 'Acme', emails: ['rh@acme.fr'] })],
+    })
+
+    assert.equal(summary.sent, 0)
+    assert.equal(summary.skipped, 1)
+    assert.equal(sent.length, 0)
+    assert.equal(summary.results.at(-1).skipReason, 'no_contact_available')
+  })
+})
+
 function makeJsonStore(data) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-'))
   const jsonPath = path.join(dir, 'store.json')
   fs.writeFileSync(jsonPath, `${JSON.stringify(data, null, 2)}\n`)
   return jsonPath
+}
+
+function jsonDb(data) {
+  const jsonPath = makeJsonStore(data)
+  return { kind: 'json', path: jsonPath, data: JSON.parse(fs.readFileSync(jsonPath, 'utf8')) }
+}
+
+function setupCvForSpontaneous() {
+  saveCvUpload({
+    originalName: 'CV Produit.pdf',
+    buffer: Buffer.from('%PDF-1.4 test'),
+  })
+  saveApplicationMailTemplate({
+    firstName: 'Adrien',
+    lastName: 'Pujol',
+    phone: '06 00 00 00 00',
+    subjectTemplate: 'Candidature : [Intitulé du poste]',
+    bodyTemplate: 'Bonjour [Intitulé du poste]',
+  })
 }
 
 function nightlySchedule(overrides = {}) {

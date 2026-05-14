@@ -22,6 +22,8 @@ npm run build
 npm run radar:daily
 npm run radar:nightly
 npm run applications:discover-contacts
+npm run applications:daily
+npm run applications:spontaneous
 npm run applications:bounces
 npm test
 ```
@@ -35,7 +37,10 @@ la collecte que pendant les heures configurées, garde un état local sous
 échecs sur la même journée locale.
 
 `npm run applications:discover-contacts` enrichit les offres récentes avec des
-emails de candidature. `npm run applications:bounces` traite les retours de
+emails de candidature. `npm run applications:daily` envoie les candidatures
+rattachées aux offres. `npm run applications:spontaneous` envoie les
+candidatures spontanées récurrentes vers des contacts découverts, sans URL
+d'offre dans le mail. `npm run applications:bounces` traite les retours de
 non-livraison et met à jour les statuts avant les prochains envois.
 
 ## Variables d'environnement
@@ -72,6 +77,10 @@ Copier `.env.example` vers `.env` sur le Pi et renseigner les valeurs privées :
 - `APPLICATION_EMAIL_BOUNCE_IMAP_PASS`
 - `APPLICATION_EMAIL_BOUNCE_DIR` : dossier local optionnel de messages DSN à
   parser si IMAP n'est pas utilisé
+- `SPONTANEOUS_APPLICATION_SEND_TIMEZONE` : `Europe/Paris` par défaut
+- `SPONTANEOUS_APPLICATION_SEND_START_HOUR` : 8 par défaut
+- `SPONTANEOUS_APPLICATION_SEND_END_HOUR` : 22 par défaut, soit une fenêtre
+  08:00-21:59 inclus
 
 Ne pas publier `.env`, la base SQLite, les rapports générés ni les logs.
 
@@ -98,7 +107,7 @@ Les appels API sont étalés source par source par le collecteur, pas lancés to
 en même temps. C'est volontaire pour limiter les pics de requêtes, réduire le
 risque de `429 Too Many Requests` et garder des logs lisibles par source.
 
-## Candidatures et rebonds
+## Candidatures, spontanées et rebonds
 
 Les emails recruteurs sont cherchés dans les champs des offres, les liens de
 candidature, les pages publiques de recrutement, puis par adresses génériques
@@ -106,10 +115,33 @@ du domaine entreprise. Si un recruteur public est identifié, des variantes
 professionnelles peuvent être inférées lorsque `APPLICATION_EMAIL_INFERRED_ENABLED`
 est actif.
 
-L'envoi live choisit une adresse par offre et par tentative, avec 3 adresses
-maximum par offre, 1 nouvel envoi par offre par jour et un quota quotidien live
-configurable. Les envois sont bloqués hors fenêtre 08:00-21:00 Europe/Paris par
-défaut, même si un cron appelle le script plus tôt ou plus tard. Les emails
+Deux types d'action sont journalisés :
+
+- `job_offer_application` : candidature rattachée à une offre, avec URL, score
+  et fiche offre ;
+- `spontaneous_application` : candidature non rattachée à une offre, ciblant
+  une entreprise et un recruteur/contact découvert avec email valide.
+
+L'envoi sur offre choisit une adresse par offre et par tentative, avec 3
+adresses maximum par offre, 1 nouvel envoi par offre par jour et un quota
+quotidien live configurable. Les envois sur offre sont bloqués hors fenêtre
+08:00-20:59 Europe/Paris par défaut, même si un cron appelle le script plus tôt
+ou plus tard.
+
+L'envoi spontané réutilise la découverte de contacts existante, mais le mail a
+toujours l'objet `Candidature spontanée` et ne contient aucune URL d'offre. Le
+corps reprend le téléphone, le prénom et le nom configurés par l'utilisateur,
+et joint le CV actif importé. Les règles spécifiques sont :
+
+- ne jamais renvoyer une candidature spontanée à un email déjà envoyé ;
+- maximum 1 candidature spontanée acceptée par SMTP par jour ;
+- retry immédiat en cas d'échec d'envoi ;
+- arrêt jusqu'au lendemain après 1 succès ou après 3 échecs d'envoi ;
+- fenêtre dédiée 08:00-21:59 inclus.
+
+Chaque tentative est loggée avec la date/heure, le type d'action, l'entreprise,
+le contact, l'email, le statut, la raison d'échec ou de skip, le numéro de
+tentative du jour et la raison d'arrêt journalier si applicable. Les emails
 acceptés par SMTP sont marqués `sent_pending_delivery`, puis
 `applications:bounces` classe les retours en `hard_bounced`, `soft_bounced`,
 `retry_scheduled` ou `delivered_or_no_bounce_after_grace_period`.
@@ -143,14 +175,16 @@ Sur le Pi, utiliser un cron local plutôt que GitHub Actions :
 ```cron
 15 2,4,6 * * * cd /chemin/vers/Opportunity-Radar && npm run radar:nightly >> logs/radar-cron.log 2>&1
 15 8-20 * * * cd /chemin/vers/Opportunity-Radar && npm run applications:daily >> logs/applications-cron.log 2>&1
+15 8-21 * * * cd /chemin/vers/Opportunity-Radar && npm run applications:spontaneous >> logs/spontaneous-applications-cron.log 2>&1
 45 8-20 * * * cd /chemin/vers/Opportunity-Radar && npm run applications:bounces >> logs/applications-bounces.log 2>&1
 ```
 
 Cette planification tente une première collecte à 02:15, puis laisse deux
 créneaux de retry à 04:15 et 06:15 si la collecte précédente a échoué. Une fois
 le run réussi, les créneaux suivants sont ignorés. Après 3 échecs le même jour,
-le script n'essaie plus avant la journée suivante. Les candidatures et le
-traitement des rebonds tournent ensuite en journée, de 08:15 à 20:45.
+le script n'essaie plus avant la journée suivante. Les candidatures sur offres,
+les candidatures spontanées et le traitement des rebonds tournent ensuite en
+journée, avec leurs propres garde-fous horaires côté script.
 
 Après chaque déploiement, lancer un test immédiat :
 

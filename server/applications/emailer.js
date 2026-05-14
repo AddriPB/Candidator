@@ -247,7 +247,7 @@ export function applicationOfferKey(offer) {
   ].join('|'))}`
 }
 
-function buildApplicationContext(cvState) {
+export function buildApplicationContext(cvState) {
   const activeFile = cvState.activeFile || ''
   const cvPath = activeFile ? path.join(cvState.storageDir, activeFile) : ''
   const applicationMail = cvState.applicationMail || {}
@@ -302,7 +302,7 @@ function applicationOfferUrl(offer) {
   ].find((value) => /^https?:\/\//i.test(String(value || '').trim())) || ''
 }
 
-function applicationRecipient(originalRecipients, env) {
+export function applicationRecipient(originalRecipients, env) {
   const mode = String(env.APPLICATION_EMAIL_DELIVERY_MODE || 'test').toLowerCase()
   const redirectTo = String(env.APPLICATION_EMAIL_REDIRECT_TO || TEST_RECIPIENT).trim()
   if (mode !== 'live') return redirectTo
@@ -343,28 +343,28 @@ function normalizeUrl(url) {
   }
 }
 
-function buildAttemptId({ offerKey, email, now }) {
+export function buildAttemptId({ offerKey, email, now }) {
   return stableHash(`${offerKey}|${email}|${now.toISOString()}|${Math.random()}`).slice(0, 24)
 }
 
-function buildBounceAddress(attemptId, env) {
+export function buildBounceAddress(attemptId, env) {
   const base = String(env.APPLICATION_EMAIL_BOUNCE_ADDRESS || '').trim()
   if (!base || !base.includes('@')) return ''
   const [local, domain] = base.split('@')
   return `${local}+${attemptId}@${domain}`
 }
 
-function isHardSmtpFailure(error) {
+export function isHardSmtpFailure(error) {
   const responseCode = Number(error?.responseCode)
   if (Number.isFinite(responseCode) && responseCode >= 500 && responseCode < 600) return true
   return /\b5\.\d+\.\d+\b|\b55\d\b|user unknown|mailbox unavailable|invalid recipient/i.test(String(error?.message || ''))
 }
 
-function startOfUtcDay(date) {
+export function startOfUtcDay(date) {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()))
 }
 
-function positiveInteger(value, fallback) {
+export function positiveInteger(value, fallback) {
   const number = Number(value)
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback
 }
@@ -373,7 +373,7 @@ function isAcceptedSend(row) {
   return ['sent_pending_delivery', 'hard_bounced', 'soft_bounced', 'retry_scheduled', 'delivered_or_no_bounce_after_grace_period'].includes(row.status)
 }
 
-function applicationSendWindow(now, env) {
+export function applicationSendWindow(now, env) {
   const timezone = String(env.APPLICATION_EMAIL_SEND_TIMEZONE || 'Europe/Paris')
   const startHour = boundedHour(env.APPLICATION_EMAIL_SEND_START_HOUR, 8)
   const endHour = boundedHour(env.APPLICATION_EMAIL_SEND_END_HOUR, 21)

@@ -14,6 +14,7 @@
     "applications:discover-contacts": "node server/cli/discover-application-contacts.js",
     "applications:bounces": "node server/cli/process-application-bounces.js",
     "applications:daily": "node server/cli/send-daily-applications.js",
+    "applications:spontaneous": "node server/cli/send-spontaneous-applications.js",
     "email:test": "node server/cli/send-test-email.js",
     "db:prune": "node server/cli/prune-old-data.js",
     "preview": "vite preview",

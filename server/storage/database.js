@@ -199,20 +199,25 @@ export function getOfferEmailStats(db, { since = applicationWindowStart(), now =
 export function getRecentApplicationEmailSends(db, cutoff) {
   if (db.kind === 'json') {
     refreshJsonStore(db)
-    return db.data.applicationEmailSends.filter((row) => row.sentAt >= cutoff)
+    return db.data.applicationEmailSends.filter((row) => row.sentAt >= cutoff).map(normalizeApplicationEmailSend)
   }
   return db.db.prepare(`
     SELECT sent_at AS sentAt,
+           action_type AS actionType,
            offer_key AS offerKey,
            offer_id AS offerId,
            offer_title AS offerTitle,
            company,
+           contact_name AS contactName,
            original_to AS originalTo,
            sent_to AS sentTo,
            subject,
            message_id AS messageId,
            attempt_id AS attemptId,
            contact_email AS contactEmail,
+           attempt_of_day AS attemptOfDay,
+           skip_reason AS skipReason,
+           daily_stop_reason AS dailyStopReason,
            status,
            error
     FROM application_email_sends
@@ -226,19 +231,25 @@ export function getApplicationEmailSends(db, { since = new Date(0).toISOString()
     return db.data.applicationEmailSends
       .filter((row) => row.sentAt >= since)
       .filter((row) => statuses.length === 0 || statuses.includes(row.status))
+      .map(normalizeApplicationEmailSend)
   }
   const rows = db.db.prepare(`
     SELECT sent_at AS sentAt,
+           action_type AS actionType,
            offer_key AS offerKey,
            offer_id AS offerId,
            offer_title AS offerTitle,
            company,
+           contact_name AS contactName,
            original_to AS originalTo,
            sent_to AS sentTo,
            subject,
            message_id AS messageId,
            attempt_id AS attemptId,
            contact_email AS contactEmail,
+           attempt_of_day AS attemptOfDay,
+           skip_reason AS skipReason,
+           daily_stop_reason AS dailyStopReason,
            status,
            error
     FROM application_email_sends
@@ -257,23 +268,52 @@ export function saveApplicationEmailSend(db, row) {
   }
   db.db.prepare(`
     INSERT INTO application_email_sends (
-      sent_at, offer_key, offer_id, offer_title, company, original_to, sent_to, subject, message_id, attempt_id, contact_email, status, error
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      sent_at, action_type, offer_key, offer_id, offer_title, company, contact_name, original_to, sent_to, subject, message_id, attempt_id, contact_email, attempt_of_day, skip_reason, daily_stop_reason, status, error
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     row.sentAt,
+    row.actionType || 'job_offer_application',
     row.offerKey,
     row.offerId,
     row.offerTitle,
     row.company,
+    row.contactName || '',
     row.originalTo,
     row.sentTo,
     row.subject,
     row.messageId || '',
     row.attemptId || '',
     row.contactEmail || '',
+    Number(row.attemptOfDay || 0),
+    row.skipReason || '',
+    row.dailyStopReason || '',
     row.status,
     row.error || '',
   )
+}
+
+export function getAllApplicationContacts(db) {
+  if (db.kind === 'json') {
+    refreshJsonStore(db)
+    return db.data.applicationContacts
+      .map((row) => ({ ...row, email: normalizeEmail(row.email) }))
+      .filter((row) => row.email)
+      .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0) || String(a.email).localeCompare(String(b.email)))
+  }
+  return db.db.prepare(`
+    SELECT offer_key AS offerKey,
+           email,
+           method,
+           source_url AS sourceUrl,
+           confidence,
+           status,
+           last_attempt_at AS lastAttemptAt,
+           bounce_reason AS bounceReason,
+           attempts,
+           updated_at AS updatedAt
+    FROM application_contacts
+    ORDER BY confidence DESC, email ASC
+  `).all()
 }
 
 export function getApplicationContacts(db, offerKey) {
@@ -554,16 +594,21 @@ function migrate(db) {
     CREATE TABLE IF NOT EXISTS application_email_sends (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       sent_at TEXT NOT NULL,
+      action_type TEXT NOT NULL DEFAULT 'job_offer_application',
       offer_key TEXT NOT NULL,
       offer_id TEXT NOT NULL,
       offer_title TEXT NOT NULL,
       company TEXT NOT NULL,
+      contact_name TEXT NOT NULL DEFAULT '',
       original_to TEXT NOT NULL,
       sent_to TEXT NOT NULL,
       subject TEXT NOT NULL,
       message_id TEXT NOT NULL DEFAULT '',
       attempt_id TEXT NOT NULL DEFAULT '',
       contact_email TEXT NOT NULL DEFAULT '',
+      attempt_of_day INTEGER NOT NULL DEFAULT 0,
+      skip_reason TEXT NOT NULL DEFAULT '',
+      daily_stop_reason TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL,
       error TEXT NOT NULL DEFAULT ''
     );
@@ -593,6 +638,11 @@ function migrate(db) {
   ensureColumn(db, 'source_checks', 'errors_count', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(db, 'application_email_sends', 'attempt_id', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(db, 'application_email_sends', 'contact_email', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(db, 'application_email_sends', 'action_type', "TEXT NOT NULL DEFAULT 'job_offer_application'")
+  ensureColumn(db, 'application_email_sends', 'contact_name', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(db, 'application_email_sends', 'attempt_of_day', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(db, 'application_email_sends', 'skip_reason', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(db, 'application_email_sends', 'daily_stop_reason', "TEXT NOT NULL DEFAULT ''")
 }
 
 function ensureColumn(db, table, column, definition) {
@@ -631,6 +681,17 @@ function writeJsonStore(store) {
   fs.writeFileSync(store.path, `${JSON.stringify(store.data, null, 2)}\n`)
 }
 
+function normalizeApplicationEmailSend(row) {
+  return {
+    ...row,
+    actionType: row.actionType || row.action_type || 'job_offer_application',
+    contactName: row.contactName || row.contact_name || '',
+    attemptOfDay: Number(row.attemptOfDay || row.attempt_of_day || 0),
+    skipReason: row.skipReason || row.skip_reason || '',
+    dailyStopReason: row.dailyStopReason || row.daily_stop_reason || '',
+  }
+}
+
 function collectOfferEmails({ startedAt, offers }) {
   return offers.flatMap((offer) => {
     const emails = Array.isArray(offer.emails) ? offer.emails : []
@@ -663,4 +724,8 @@ function normalizeUrl(url) {
   } catch {
     return String(url || '').trim().toLowerCase()
   }
+}
+
+function normalizeEmail(value) {
+  return String(value || '').trim().toLowerCase()
 }
