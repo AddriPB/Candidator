@@ -350,6 +350,22 @@ test('cv: utilise adri comme pseudo par defaut', () => {
   })
 })
 
+test('cv: utilise le dossier runtime du projet par defaut', () => {
+  withCvEnv(() => {
+    delete process.env.CV_STORAGE_DIR
+    delete process.env.OPPORTUNITY_RADAR_PRIVATE_DIR
+    process.env.CV_USER_PSEUDO = 'adri'
+    const runtimeCvRoot = path.resolve('cv')
+    const runtimeCvRootExisted = fs.existsSync(runtimeCvRoot)
+
+    const state = getCvState()
+
+    assert.equal(state.storageDir, path.resolve('cv', 'adri'))
+    assert.equal(state.storageDir.includes('/home/pi/opportunity-radar-private'), false)
+    if (!runtimeCvRootExisted) fs.rmSync(runtimeCvRoot, { recursive: true, force: true })
+  })
+})
+
 function makeJsonStore(data) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-'))
   const jsonPath = path.join(dir, 'store.json')

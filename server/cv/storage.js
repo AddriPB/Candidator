@@ -1,9 +1,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const ACTIVE_FILE = '.active-cv.json'
 const ALLOWED_EXTENSIONS = new Set(['.pdf', '.doc', '.docx'])
 const MAX_FILE_SIZE = 10 * 1024 * 1024
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
 export function getCvState() {
   const dir = userCvDir()
@@ -58,7 +60,7 @@ function userCvDir() {
 }
 
 function cvRootDir() {
-  const fallback = path.join(process.env.OPPORTUNITY_RADAR_PRIVATE_DIR || '/home/pi/opportunity-radar-private', 'cv')
+  const fallback = path.join(process.env.OPPORTUNITY_RADAR_PRIVATE_DIR || PROJECT_ROOT, 'cv')
   return path.resolve(process.env.CV_STORAGE_DIR || fallback)
 }
 

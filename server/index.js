@@ -24,7 +24,7 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', origin)
     res.setHeader('Vary', 'Origin')
     res.setHeader('Access-Control-Allow-Credentials', 'true')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-File-Name')
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
   }
   if (req.method === 'OPTIONS') return res.sendStatus(204)
@@ -115,7 +115,7 @@ app.use((error, _req, res, _next) => {
 })
 
 function corsOrigins() {
-  return String(process.env.CORS_ORIGINS || '').split(',').map((item) => item.trim()).filter(Boolean)
+  return String(process.env.CORS_ORIGINS || 'https://addripb.github.io').split(',').map((item) => item.trim()).filter(Boolean)
 }
 
 function logSourceCheckRequest(req, res, next) {
