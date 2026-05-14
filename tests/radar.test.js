@@ -604,6 +604,82 @@ test('candidatures: bloque un nouvel envoi sur la meme annonce pendant 12 mois',
   })
 })
 
+test('candidatures: bloque les envois hors fenetre 08h-21h Paris', async () => {
+  await withCvEnv(async () => {
+    saveCvUpload({
+      originalName: 'CV Produit.pdf',
+      buffer: Buffer.from('%PDF-1.4 test'),
+    })
+    saveApplicationMailTemplate({
+      firstName: 'Adrien',
+      lastName: 'Pujol',
+      phone: '06 00 00 00 00',
+      subjectTemplate: 'Candidature : [Intitulé du poste]',
+      bodyTemplate: 'Bonjour [Intitulé du poste]',
+    })
+
+    const jsonPath = makeJsonStore({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [] })
+    const db = { kind: 'json', path: jsonPath, data: JSON.parse(fs.readFileSync(jsonPath, 'utf8')) }
+    const sent = []
+    const summary = await sendDailyApplicationEmails({
+      db,
+      now: new Date('2026-05-14T05:59:00.000Z'),
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'live' },
+      mailer: async (message) => {
+        sent.push(message)
+        return { messageId: 'message-1' }
+      },
+      logger: silentLogger(),
+      offers: [
+        offer({ id: 'offer:window', title: 'Product Owner', verdict: 'à candidater', emails: ['rh@example.fr'] }),
+      ],
+      startedAt: '2026-05-14T05:55:00.000Z',
+    })
+
+    assert.equal(summary.sent, 0)
+    assert.equal(summary.skipped, 1)
+    assert.equal(sent.length, 0)
+    assert.equal(summary.results[0].reason, 'outside_send_window_Europe/Paris_08:00-21:00')
+  })
+})
+
+test('candidatures: autorise les envois dans la fenetre 08h-21h Paris', async () => {
+  await withCvEnv(async () => {
+    saveCvUpload({
+      originalName: 'CV Produit.pdf',
+      buffer: Buffer.from('%PDF-1.4 test'),
+    })
+    saveApplicationMailTemplate({
+      firstName: 'Adrien',
+      lastName: 'Pujol',
+      phone: '06 00 00 00 00',
+      subjectTemplate: 'Candidature : [Intitulé du poste]',
+      bodyTemplate: 'Bonjour [Intitulé du poste]',
+    })
+
+    const jsonPath = makeJsonStore({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [] })
+    const db = { kind: 'json', path: jsonPath, data: JSON.parse(fs.readFileSync(jsonPath, 'utf8')) }
+    const sent = []
+    const summary = await sendDailyApplicationEmails({
+      db,
+      now: new Date('2026-05-14T06:00:00.000Z'),
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'live' },
+      mailer: async (message) => {
+        sent.push(message)
+        return { messageId: 'message-1' }
+      },
+      logger: silentLogger(),
+      offers: [
+        offer({ id: 'offer:window', title: 'Product Owner', verdict: 'à candidater', emails: ['rh@example.fr'] }),
+      ],
+      startedAt: '2026-05-14T05:55:00.000Z',
+    })
+
+    assert.equal(summary.sent, 1)
+    assert.equal(sent.length, 1)
+  })
+})
+
 test('contacts recruteurs: extrait mailto et rejette les faux emails', async () => {
   const contacts = await discoverContactsForOffer(offer({
     id: 'offer:contact',

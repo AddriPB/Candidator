@@ -48,6 +48,15 @@ export async function sendDailyApplicationEmails({
     results: [],
   }
 
+  const sendWindow = applicationSendWindow(now, env)
+  if (!sendWindow.allowed) {
+    const result = { status: 'skipped', reason: sendWindow.reason }
+    summary.skipped = source.offers.length
+    summary.results = source.offers.map((offer) => ({ ...result, offerId: offer.id, offerTitle: offer.title }))
+    logger.warn(`[applications] envoi ignore: ${sendWindow.reason}`)
+    return summary
+  }
+
   if (!context.ready) {
     const result = { status: 'skipped', reason: context.reason }
     summary.skipped = source.offers.length
@@ -338,4 +347,38 @@ function positiveInteger(value, fallback) {
 
 function isAcceptedSend(row) {
   return ['sent_pending_delivery', 'hard_bounced', 'soft_bounced', 'retry_scheduled', 'delivered_or_no_bounce_after_grace_period'].includes(row.status)
+}
+
+function applicationSendWindow(now, env) {
+  const timezone = String(env.APPLICATION_EMAIL_SEND_TIMEZONE || 'Europe/Paris')
+  const startHour = boundedHour(env.APPLICATION_EMAIL_SEND_START_HOUR, 8)
+  const endHour = boundedHour(env.APPLICATION_EMAIL_SEND_END_HOUR, 21)
+  const local = localTimeParts(now, timezone)
+  const currentMinutes = local.hour * 60 + local.minute
+  const startMinutes = startHour * 60
+  const endMinutes = endHour * 60
+  const allowed = currentMinutes >= startMinutes && currentMinutes < endMinutes
+  return {
+    allowed,
+    reason: allowed ? '' : `outside_send_window_${timezone}_${String(startHour).padStart(2, '0')}:00-${String(endHour).padStart(2, '0')}:00`,
+  }
+}
+
+function boundedHour(value, fallback) {
+  const number = Number(value)
+  return Number.isInteger(number) && number >= 0 && number <= 24 ? number : fallback
+}
+
+function localTimeParts(date, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return {
+    hour: Number(values.hour),
+    minute: Number(values.minute),
+  }
 }

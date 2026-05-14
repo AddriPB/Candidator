@@ -61,6 +61,9 @@ Copier `.env.example` vers `.env` sur le Pi et renseigner les valeurs privées :
 - `APPLICATION_EMAIL_MAX_CONTACTS_PER_OFFER` : 3 par défaut
 - `APPLICATION_EMAIL_PER_OFFER_DAILY_LIMIT` : 1 par défaut
 - `APPLICATION_EMAIL_DAILY_LIMIT` : 20 par défaut
+- `APPLICATION_EMAIL_SEND_TIMEZONE` : `Europe/Paris` par défaut
+- `APPLICATION_EMAIL_SEND_START_HOUR` : 8 par défaut
+- `APPLICATION_EMAIL_SEND_END_HOUR` : 21 par défaut
 - `APPLICATION_EMAIL_INFERRED_ENABLED` : `true` par défaut
 - `APPLICATION_EMAIL_BOUNCE_ADDRESS` : adresse de retour DSN, par exemple
   `bounce@example.fr`
@@ -105,10 +108,11 @@ est actif.
 
 L'envoi live choisit une adresse par offre et par tentative, avec 3 adresses
 maximum par offre, 1 nouvel envoi par offre par jour et un quota quotidien live
-configurable. Les emails acceptés par SMTP sont marqués
-`sent_pending_delivery`, puis `applications:bounces` classe les retours en
-`hard_bounced`, `soft_bounced`, `retry_scheduled` ou
-`delivered_or_no_bounce_after_grace_period`.
+configurable. Les envois sont bloqués hors fenêtre 08:00-21:00 Europe/Paris par
+défaut, même si un cron appelle le script plus tôt ou plus tard. Les emails
+acceptés par SMTP sont marqués `sent_pending_delivery`, puis
+`applications:bounces` classe les retours en `hard_bounced`, `soft_bounced`,
+`retry_scheduled` ou `delivered_or_no_bounce_after_grace_period`.
 
 ## Filtrage et scoring
 
@@ -138,12 +142,15 @@ Sur le Pi, utiliser un cron local plutôt que GitHub Actions :
 
 ```cron
 15 2,4,6 * * * cd /chemin/vers/Opportunity-Radar && npm run radar:nightly >> logs/radar-cron.log 2>&1
+15 8-20 * * * cd /chemin/vers/Opportunity-Radar && npm run applications:daily >> logs/applications-cron.log 2>&1
+45 8-20 * * * cd /chemin/vers/Opportunity-Radar && npm run applications:bounces >> logs/applications-bounces.log 2>&1
 ```
 
 Cette planification tente une première collecte à 02:15, puis laisse deux
 créneaux de retry à 04:15 et 06:15 si la collecte précédente a échoué. Une fois
 le run réussi, les créneaux suivants sont ignorés. Après 3 échecs le même jour,
-le script n'essaie plus avant la journée suivante.
+le script n'essaie plus avant la journée suivante. Les candidatures et le
+traitement des rebonds tournent ensuite en journée, de 08:15 à 20:45.
 
 Après chaque déploiement, lancer un test immédiat :
 
