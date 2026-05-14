@@ -141,33 +141,50 @@ export function getLatestRadarOffers(db) {
 }
 
 export function getLatestApplicationCandidateOffers(db) {
-  if (db.kind === 'json') {
-    refreshJsonStore(db)
-    const row = [...db.data.radarRuns].sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))[0]
-    return {
-      startedAt: row?.startedAt || null,
-      offers: (row?.offers || []).filter(isApplicationCandidateOffer),
+  return getApplicationEmailEligibleOffers(db)
+}
+
+export function getApplicationEmailEligibleOffers(db, { since = applicationWindowStart(), now = new Date() } = {}) {
+  const rows = readRadarRuns(db)
+  const offers = []
+  const seen = new Set()
+  for (const row of rows) {
+    for (const offer of row.offers || []) {
+      if (!isApplicationEmailEligibleOffer(offer, { since, now })) continue
+      const key = offerStorageKey(offer)
+      if (seen.has(key)) continue
+      seen.add(key)
+      offers.push({ ...offer, runStartedAt: row.startedAt })
     }
   }
-  const row = db.db.prepare(`
-    SELECT started_at AS startedAt, offers_json AS offersJson
-    FROM radar_runs
-    ORDER BY started_at DESC
-    LIMIT 1
-  `).get()
+  return {
+    since: since.toISOString(),
+    startedAt: rows[0]?.startedAt || null,
+    offers,
+  }
+}
 
-  if (!row) return { startedAt: null, offers: [] }
+export function getOfferEmailStats(db, { since = applicationWindowStart(), now = new Date() } = {}) {
+  const rows = readRadarRuns(db)
+  const allKeys = new Set()
+  const emailKeys = new Set()
+  let latestRunAt = null
 
-  let offers = []
-  try {
-    offers = JSON.parse(row.offersJson)
-  } catch {
-    offers = []
+  for (const row of rows) {
+    if (!latestRunAt || row.startedAt > latestRunAt) latestRunAt = row.startedAt
+    for (const offer of row.offers || []) {
+      if (!isVisibleOffer(offer) || !isRecentOffer(offer, { since, now })) continue
+      const key = offerStorageKey(offer)
+      allKeys.add(key)
+      if (Array.isArray(offer.emails) && offer.emails.length > 0) emailKeys.add(key)
+    }
   }
 
   return {
-    startedAt: row.startedAt,
-    offers: offers.filter(isApplicationCandidateOffer),
+    since: since.toISOString(),
+    latestRunAt,
+    offersRecent: allKeys.size,
+    offersWithEmail: emailKeys.size,
   }
 }
 
@@ -281,8 +298,50 @@ function isVisibleOffer(offer) {
   return offer.verdict !== 'à rejeter' && offer.evaluation?.status !== 'à rejeter'
 }
 
-function isApplicationCandidateOffer(offer) {
-  return isVisibleOffer(offer) && offer.verdict === 'à candidater' && Array.isArray(offer.emails) && offer.emails.length > 0
+function isApplicationEmailEligibleOffer(offer, { since, now }) {
+  return isVisibleOffer(offer) && Array.isArray(offer.emails) && offer.emails.length > 0 && isRecentOffer(offer, { since, now })
+}
+
+function isRecentOffer(offer, { since, now }) {
+  const value = offer.publishedAt || offer.collectedAt || ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return false
+  return date >= since && date <= now
+}
+
+function readRadarRuns(db) {
+  if (db.kind === 'json') {
+    refreshJsonStore(db)
+    return [...db.data.radarRuns]
+      .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))
+      .map((row) => ({ startedAt: row.startedAt, offers: row.offers || [] }))
+  }
+
+  return db.db.prepare(`
+    SELECT started_at AS startedAt, offers_json AS offersJson
+    FROM radar_runs
+    ORDER BY started_at DESC
+  `).all().map((row) => {
+    let offers = []
+    try {
+      offers = JSON.parse(row.offersJson)
+    } catch {
+      offers = []
+    }
+    return { startedAt: row.startedAt, offers }
+  })
+}
+
+function offerStorageKey(offer) {
+  if (offer.link) return `link:${normalizeUrl(offer.link)}`
+  if (offer.id) return `id:${offer.id}`
+  return [
+    offer.title,
+    offer.company,
+    offer.location,
+    offer.source,
+    String(offer.description || '').slice(0, 180),
+  ].join('|').toLowerCase()
 }
 
 function migrate(db) {
@@ -392,4 +451,20 @@ function collectOfferEmails({ startedAt, offers }) {
 function applicationEmailBlockDays() {
   const months = Number(process.env.APPLICATION_EMAIL_BLOCK_MONTHS || 12)
   return (Number.isFinite(months) && months > 0 ? months : 12) * 31
+}
+
+function applicationWindowStart(now = new Date()) {
+  const months = Number(process.env.APPLICATION_EMAIL_OFFER_MAX_MONTHS || 12)
+  const safeMonths = Number.isFinite(months) && months > 0 ? months : 12
+  return new Date(now.getTime() - safeMonths * 31 * 24 * 60 * 60 * 1000)
+}
+
+function normalizeUrl(url) {
+  try {
+    const parsed = new URL(url)
+    parsed.hash = ''
+    return parsed.toString().replace(/\/$/, '')
+  } catch {
+    return String(url || '').trim().toLowerCase()
+  }
 }

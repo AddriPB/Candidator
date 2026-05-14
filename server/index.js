@@ -2,10 +2,12 @@ import 'dotenv/config'
 import express from 'express'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { sendApplicationTestEmail } from './applications/emailer.js'
 import { getAuthDiagnostics, loginHandler, logoutHandler, meHandler, requireAuth } from './auth/index.js'
 import { checkSources } from './connectors/sourceChecks.js'
 import { cvDownloadPath, getCvState, saveApplicationMailTemplate, saveCvUpload, setActiveCv } from './cv/storage.js'
-import { getLatestRadarOffers, getLatestSourceChecks, openDatabase, pruneOldData, saveSourceCheckLogs } from './storage/database.js'
+import { assertSmtpConfig } from './email/smtp.js'
+import { getApplicationEmailEligibleOffers, getLatestRadarOffers, getLatestSourceChecks, getOfferEmailStats, openDatabase, pruneOldData, saveSourceCheckLogs } from './storage/database.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(__dirname, '..')
@@ -62,6 +64,57 @@ app.get('/api/source-checks/latest', requireAuth, (_req, res) => {
 
 app.get('/api/offers', requireAuth, (_req, res) => {
   res.json(getLatestRadarOffers(db))
+})
+
+app.get('/api/test/healthcheck', requireAuth, (_req, res) => {
+  const cv = getCvState()
+  const smtp = smtpHealth()
+  const stats = getOfferEmailStats(db)
+  const eligible = getApplicationEmailEligibleOffers(db)
+  const applicationMail = cv.applicationMail || {}
+  res.json({
+    checkedAt: new Date().toISOString(),
+    bot: {
+      ok: true,
+      pid: process.pid,
+      uptimeSeconds: Math.round(process.uptime()),
+      database: db.kind,
+      host,
+      port,
+    },
+    smtp,
+    cv: {
+      ok: Boolean(cv.activeFile),
+      activeFile: cv.activeFile || '',
+      storageDir: cv.storageDir,
+    },
+    identity: {
+      ok: Boolean(applicationMail.firstName && applicationMail.lastName && applicationMail.phone),
+      firstName: Boolean(applicationMail.firstName),
+      lastName: Boolean(applicationMail.lastName),
+      phone: Boolean(applicationMail.phone),
+    },
+    applications: {
+      dailyEnabled: process.env.APPLICATION_EMAIL_DAILY_ENABLED !== 'false',
+      deliveryMode: process.env.APPLICATION_EMAIL_DELIVERY_MODE || 'test',
+      redirectTo: process.env.APPLICATION_EMAIL_REDIRECT_TO || 'adri538.mail@gmail.com',
+      blockMonths: Number(process.env.APPLICATION_EMAIL_BLOCK_MONTHS || 12),
+      offerMaxMonths: Number(process.env.APPLICATION_EMAIL_OFFER_MAX_MONTHS || 12),
+      offersRecent: stats.offersRecent,
+      offersWithEmail: stats.offersWithEmail,
+      eligibleToEmail: eligible.offers.length,
+      latestRunAt: stats.latestRunAt,
+      since: stats.since,
+    },
+  })
+})
+
+app.post('/api/test/application-email', requireAuth, async (req, res, next) => {
+  try {
+    res.json(await sendApplicationTestEmail({ to: req.body?.to }))
+  } catch (error) {
+    next(error)
+  }
 })
 
 app.get('/api/cv', requireAuth, (_req, res) => {
@@ -124,6 +177,37 @@ app.use((error, _req, res, _next) => {
 
 function corsOrigins() {
   return String(process.env.CORS_ORIGINS || 'https://addripb.github.io').split(',').map((item) => item.trim()).filter(Boolean)
+}
+
+function smtpHealth() {
+  try {
+    assertSmtpConfig()
+    return {
+      ok: true,
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT),
+      secure: process.env.SMTP_SECURE === 'true',
+      user: maskEmail(process.env.SMTP_USER),
+      from: maskEmail(process.env.APPLICATION_FROM),
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      host: process.env.SMTP_HOST || '',
+      port: Number(process.env.SMTP_PORT || 0),
+      secure: process.env.SMTP_SECURE === 'true',
+      user: maskEmail(process.env.SMTP_USER),
+      from: maskEmail(process.env.APPLICATION_FROM),
+      error: error.message,
+    }
+  }
+}
+
+function maskEmail(value) {
+  const text = String(value || '').trim()
+  const [local, domain] = text.split('@')
+  if (!local || !domain) return text ? 'renseigné' : ''
+  return `${local.slice(0, 2)}***@${domain}`
 }
 
 function logSourceCheckRequest(req, res, next) {

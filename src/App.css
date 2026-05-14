@@ -178,6 +178,51 @@ label {
   gap: 8px;
 }
 
+.section-title {
+  margin: 0;
+  color: #18211b;
+  font-size: 1.15rem;
+  letter-spacing: 0;
+}
+
+.health-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.health-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid #d8ded2;
+  border-left: 5px solid #899482;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.health-card.ok {
+  border-left-color: #1f7a55;
+}
+
+.health-card.fail {
+  border-left-color: #b34848;
+}
+
+.health-card span,
+.health-card small {
+  color: #4d5a51;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.test-email-form {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
 .check {
   display: grid;
   gap: 4px;
@@ -402,6 +447,11 @@ label {
   }
 
   .toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .health-grid,
+  .test-email-form {
     grid-template-columns: 1fr;
   }
 

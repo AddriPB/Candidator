@@ -3,7 +3,7 @@ import { sendEmail } from '../email/smtp.js'
 import { getCvState } from '../cv/storage.js'
 import { stableHash } from '../radar/hash.js'
 import {
-  getLatestApplicationCandidateOffers,
+  getApplicationEmailEligibleOffers,
   getRecentApplicationEmailSends,
   saveApplicationEmailSend,
 } from '../storage/database.js'
@@ -22,7 +22,7 @@ export async function sendDailyApplicationEmails({
 } = {}) {
   if (!db) throw new Error('Base de donnees manquante.')
 
-  const source = offers ? { startedAt, offers: offers.filter(isApplicationCandidateOffer) } : getLatestApplicationCandidateOffers(db)
+  const source = offers ? { startedAt, offers: offers.filter((offer) => isApplicationEmailEligibleOffer(offer, { now, env })) } : getApplicationEmailEligibleOffers(db, { now })
   const cvState = getCvState()
   const context = buildApplicationContext(cvState)
   const cutoff = blockCutoff(now, env).toISOString()
@@ -122,6 +122,41 @@ export function buildApplicationMessage({ offer, context }) {
   }
 }
 
+export async function sendApplicationTestEmail({ to, env = process.env, mailer = sendEmail } = {}) {
+  const recipient = String(to || '').trim()
+  if (!recipient) throw new Error('Destinataire manquant.')
+
+  const cvState = getCvState()
+  const context = buildApplicationContext(cvState)
+  if (!context.ready) throw new Error(context.reason)
+
+  const offer = {
+    id: `manual-test:${Date.now()}`,
+    title: 'Test Opportunity Radar',
+    company: 'Test',
+    emails: [recipient],
+  }
+  const message = buildApplicationMessage({ offer, context })
+  const result = await mailer({
+    to: recipient,
+    subject: message.subject,
+    text: message.text,
+    attachments: [
+      {
+        filename: context.cvFileName,
+        path: context.cvPath,
+      },
+    ],
+  }, env)
+
+  return {
+    to: recipient,
+    subject: message.subject,
+    messageId: result?.messageId || '',
+    cvFileName: context.cvFileName,
+  }
+}
+
 export function applicationOfferKey(offer) {
   if (offer.link) return `link:${normalizeUrl(offer.link)}`
   if (offer.id) return `id:${offer.id}`
@@ -178,12 +213,23 @@ function normalizedEmails(emails) {
   return Array.from(new Set((emails || []).map((email) => String(email || '').trim().toLowerCase()).filter(Boolean))).sort()
 }
 
-function isApplicationCandidateOffer(offer) {
-  return offer.verdict === 'à candidater' && normalizedEmails(offer.emails).length > 0
+function isApplicationEmailEligibleOffer(offer, { now, env }) {
+  const status = offer.evaluation?.status || ''
+  if (offer.verdict === 'à rejeter' || status === 'à rejeter') return false
+  if (normalizedEmails(offer.emails).length === 0) return false
+  const date = new Date(offer.publishedAt || offer.collectedAt || '')
+  if (Number.isNaN(date.getTime())) return false
+  return date >= offerWindowStart(now, env) && date <= now
 }
 
 function blockCutoff(now, env) {
   const months = Number(env.APPLICATION_EMAIL_BLOCK_MONTHS || 12)
+  const safeMonths = Number.isFinite(months) && months > 0 ? months : 12
+  return new Date(now.getTime() - safeMonths * 31 * 24 * 60 * 60 * 1000)
+}
+
+function offerWindowStart(now, env) {
+  const months = Number(env.APPLICATION_EMAIL_OFFER_MAX_MONTHS || 12)
   const safeMonths = Number.isFinite(months) && months > 0 ? months : 12
   return new Date(now.getTime() - safeMonths * 31 * 24 * 60 * 60 * 1000)
 }

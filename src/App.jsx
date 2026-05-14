@@ -27,6 +27,12 @@ export default function App() {
   const [checksRunAt, setChecksRunAt] = useState(null)
   const [checksLoading, setChecksLoading] = useState(false)
   const [checksError, setChecksError] = useState('')
+  const [health, setHealth] = useState(null)
+  const [healthLoading, setHealthLoading] = useState(false)
+  const [healthError, setHealthError] = useState('')
+  const [testEmailLoading, setTestEmailLoading] = useState(false)
+  const [testEmailResult, setTestEmailResult] = useState(null)
+  const [testEmailError, setTestEmailError] = useState('')
   const [cvState, setCvState] = useState(null)
   const [cvLoading, setCvLoading] = useState(false)
   const [cvError, setCvError] = useState('')
@@ -62,6 +68,11 @@ export default function App() {
   useEffect(() => {
     if (!authenticated || view !== 'cv') return
     loadCv()
+  }, [authenticated, view])
+
+  useEffect(() => {
+    if (!authenticated || view !== 'test') return
+    loadHealthcheck()
   }, [authenticated, view])
 
   async function login(event) {
@@ -115,6 +126,40 @@ export default function App() {
       setChecksError(errorMessage)
     } finally {
       setChecksLoading(false)
+    }
+  }
+
+  async function loadHealthcheck() {
+    setHealthLoading(true)
+    setHealthError('')
+    try {
+      const data = await api('/api/test/healthcheck')
+      setHealth(data)
+    } catch (error) {
+      if (handleAuthError(error)) return
+      setHealthError(apiErrorMessage(error, 'Impossible de charger le healthcheck.'))
+    } finally {
+      setHealthLoading(false)
+    }
+  }
+
+  async function sendApplicationTestEmail(to) {
+    setTestEmailLoading(true)
+    setTestEmailError('')
+    setTestEmailResult(null)
+    try {
+      const data = await api('/api/test/application-email', {
+        method: 'POST',
+        body: JSON.stringify({ to }),
+      })
+      setTestEmailResult(data)
+      setMessage(`Mail test envoyé à ${data.to}.`)
+      loadHealthcheck()
+    } catch (error) {
+      if (handleAuthError(error)) return
+      setTestEmailError(apiErrorMessage(error, 'Impossible d’envoyer le mail test.'))
+    } finally {
+      setTestEmailLoading(false)
     }
   }
 
@@ -250,7 +295,15 @@ export default function App() {
                 checksError={checksError}
                 checksLoading={checksLoading}
                 checksRunAt={checksRunAt}
+                health={health}
+                healthError={healthError}
+                healthLoading={healthLoading}
+                onRefreshHealth={loadHealthcheck}
                 onRunSourceCheck={runSourceCheck}
+                onSendApplicationTestEmail={sendApplicationTestEmail}
+                testEmailError={testEmailError}
+                testEmailLoading={testEmailLoading}
+                testEmailResult={testEmailResult}
               />
             ) : (
               <OffersScreen
@@ -338,9 +391,89 @@ function OffersScreen({ filteredOffers, offers, offersError, offersLoading, offe
   )
 }
 
-function TestScreen({ checks, checksError, checksLoading, checksRunAt, onRunSourceCheck }) {
+function TestScreen({
+  checks,
+  checksError,
+  checksLoading,
+  checksRunAt,
+  health,
+  healthError,
+  healthLoading,
+  onRefreshHealth,
+  onRunSourceCheck,
+  onSendApplicationTestEmail,
+  testEmailError,
+  testEmailLoading,
+  testEmailResult,
+}) {
+  const [testEmailTo, setTestEmailTo] = useState('')
+
+  function submitTestEmail(event) {
+    event.preventDefault()
+    onSendApplicationTestEmail(testEmailTo)
+  }
+
   return (
     <div className="stack">
+      <div className="toolbar">
+        <h2 className="section-title">Healthcheck</h2>
+        <button type="button" disabled={healthLoading} onClick={onRefreshHealth}>
+          {healthLoading ? 'Contrôle...' : 'Actualiser'}
+        </button>
+      </div>
+      {healthError && <div className="error">{healthError}</div>}
+      {health && (
+        <div className="health-grid">
+          <HealthCard title="Bot" ok={health.bot?.ok}>
+            <span>PID : {health.bot?.pid || '-'}</span>
+            <span>Uptime : {formatDuration(health.bot?.uptimeSeconds)}</span>
+            <span>DB : {health.bot?.database || '-'}</span>
+            <span>Port : {health.bot?.port || '-'}</span>
+          </HealthCard>
+          <HealthCard title="SMTP" ok={health.smtp?.ok}>
+            <span>{health.smtp?.host || 'Hôte non renseigné'}</span>
+            <span>From : {health.smtp?.from || '-'}</span>
+            <span>User : {health.smtp?.user || '-'}</span>
+            {health.smtp?.error && <small>{health.smtp.error}</small>}
+          </HealthCard>
+          <HealthCard title="CV" ok={health.cv?.ok && health.identity?.ok}>
+            <span>{health.cv?.activeFile || 'CV actif manquant'}</span>
+            <span>Prénom : {health.identity?.firstName ? 'OK' : 'manquant'}</span>
+            <span>Nom : {health.identity?.lastName ? 'OK' : 'manquant'}</span>
+            <span>Téléphone : {health.identity?.phone ? 'OK' : 'manquant'}</span>
+          </HealthCard>
+          <HealthCard title="Candidatures" ok={health.applications?.dailyEnabled}>
+            <span>Mode : {health.applications?.deliveryMode || '-'}</span>
+            <span>Redirection : {health.applications?.redirectTo || '-'}</span>
+            <span>{health.applications?.offersWithEmail || 0} offre(s) avec email</span>
+            <span>{health.applications?.eligibleToEmail || 0} éligible(s) à l’envoi</span>
+          </HealthCard>
+        </div>
+      )}
+
+      <form className="test-email-form" onSubmit={submitTestEmail}>
+        <label>
+          Envoyer un mail test
+          <input
+            autoComplete="email"
+            inputMode="email"
+            placeholder="adresse@email.fr"
+            type="email"
+            value={testEmailTo}
+            onChange={(event) => setTestEmailTo(event.target.value)}
+          />
+        </label>
+        <button type="submit" disabled={testEmailLoading || !testEmailTo.trim()}>
+          {testEmailLoading ? 'Envoi...' : 'Envoyer'}
+        </button>
+      </form>
+      {testEmailError && <div className="error">{testEmailError}</div>}
+      {testEmailResult && (
+        <div className="notice">
+          Mail test envoyé à {testEmailResult.to}. Objet : {testEmailResult.subject}
+        </div>
+      )}
+
       <button type="button" onClick={onRunSourceCheck} disabled={checksLoading}>
         {checksLoading ? 'Test en cours...' : 'Tester les API emploi'}
       </button>
@@ -355,6 +488,16 @@ function TestScreen({ checks, checksError, checksLoading, checksRunAt, onRunSour
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+function HealthCard({ title, ok, children }) {
+  return (
+    <div className={`health-card ${ok ? 'ok' : 'fail'}`}>
+      <strong>{title}</strong>
+      <span>{ok ? 'OK' : 'À vérifier'}</span>
+      {children}
     </div>
   )
 }
@@ -432,7 +575,7 @@ function CvScreen({ apiBase, cvError, cvLoading, cvState, cvUploading, onRefresh
         <div className="mail-editor-header">
           <div>
             <h2>Mail de candidature</h2>
-            <p>Le placeholder [Intitulé du poste] sera remplacé par le poste sélectionné dans les offres.</p>
+            <p>Le placeholder [Intitulé du poste] sera remplacé par le titre de chaque annonce au moment de l’envoi.</p>
           </div>
           <button type="button" disabled={cvLoading} onClick={applyDefaultApplicationMail}>
             Remplir avec le modèle
@@ -672,6 +815,14 @@ function formatFileSize(value) {
   return new Intl.NumberFormat('fr-FR', {
     maximumFractionDigits: 1,
   }).format(Number(value || 0) / 1024 / 1024) + ' Mo'
+}
+
+function formatDuration(seconds) {
+  const value = Number(seconds || 0)
+  if (!Number.isFinite(value) || value <= 0) return '-'
+  if (value < 60) return `${value}s`
+  if (value < 3600) return `${Math.floor(value / 60)}min`
+  return `${Math.floor(value / 3600)}h ${Math.floor((value % 3600) / 60)}min`
 }
 
 function defaultApplicationMail() {

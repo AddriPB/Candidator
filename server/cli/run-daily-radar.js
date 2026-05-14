@@ -15,7 +15,6 @@ try {
   if (process.env.APPLICATION_EMAIL_DAILY_ENABLED !== 'false') {
     const emailSummary = await sendDailyApplicationEmails({
       db,
-      offers: result.offers,
       startedAt: result.startedAt,
     })
     console.log(`[applications] candidates: ${emailSummary.candidates}`)

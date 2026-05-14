@@ -10,7 +10,7 @@ import { scoreOffer } from '../server/radar/scorer.js'
 import { loginHandler, requireAuth } from '../server/auth/index.js'
 import { buildApplicationMessage, sendDailyApplicationEmails } from '../server/applications/emailer.js'
 import { cvPseudo, getCvState, saveApplicationMailTemplate, saveCvUpload, setActiveCv } from '../server/cv/storage.js'
-import { getLatestRadarOffers, saveRadarRun, saveSourceCheckLogs } from '../server/storage/database.js'
+import { getApplicationEmailEligibleOffers, getLatestRadarOffers, saveRadarRun, saveSourceCheckLogs } from '../server/storage/database.js'
 
 const baseConfig = {
   contrat: 'CDI',
@@ -274,6 +274,26 @@ test('stockage JSON: une écriture API ne supprime pas un run ajouté sur disque
   assert.equal(stored.sourceChecks.length, 1)
 })
 
+test('stockage JSON: liste les offres avec email publiees depuis moins de 12 mois', () => {
+  const jsonPath = makeJsonStore({
+    sourceChecks: [],
+    radarRuns: [{
+      startedAt: '2026-05-14T05:15:06.048Z',
+      offers: [
+        offer({ id: 'recent-apply', link: 'https://example.test/recent-apply', verdict: 'à candidater', publishedAt: '2026-01-10T00:00:00.000Z', emails: ['apply@example.fr'], hasEmail: true }),
+        offer({ id: 'recent-watch', link: 'https://example.test/recent-watch', verdict: 'à surveiller', publishedAt: '2026-01-11T00:00:00.000Z', emails: ['watch@example.fr'], hasEmail: true }),
+        offer({ id: 'recent-no-email', link: 'https://example.test/recent-no-email', verdict: 'à candidater', publishedAt: '2026-01-12T00:00:00.000Z', emails: [], hasEmail: false }),
+        offer({ id: 'old', link: 'https://example.test/old', verdict: 'à candidater', publishedAt: '2024-01-10T00:00:00.000Z', emails: ['old@example.fr'], hasEmail: true }),
+      ],
+    }],
+  })
+  const db = { kind: 'json', path: jsonPath, data: { sourceChecks: [], radarRuns: [] } }
+
+  const result = getApplicationEmailEligibleOffers(db, { now: new Date('2026-05-14T08:00:00.000Z') })
+
+  assert.deepEqual(result.offers.map((item) => item.id).sort(), ['recent-apply', 'recent-watch'])
+})
+
 test('auth: accepte le token de session via Authorization Bearer', () => {
   withAuthEnv(() => {
     const loginRes = mockResponse()
@@ -421,7 +441,7 @@ test('candidatures: rend le mail avec le titre de chaque annonce', () => {
   assert.equal(message.text, 'Bonjour, poste Business Analyst Assurance.')
 })
 
-test('candidatures: envoie un mail par annonce meme avec la meme boite mail', async () => {
+test('candidatures: envoie un mail par annonce recente meme avec la meme boite mail', async () => {
   await withCvEnv(async () => {
     saveCvUpload({
       originalName: 'CV Produit.pdf',
@@ -449,7 +469,7 @@ test('candidatures: envoie un mail par annonce meme avec la meme boite mail', as
       logger: silentLogger(),
       offers: [
         offer({ id: 'offer:1', title: 'Product Owner', link: 'https://example.test/job/1', verdict: 'à candidater', emails: ['rh@example.fr'] }),
-        offer({ id: 'offer:2', title: 'Product Manager', link: 'https://example.test/job/2', verdict: 'à candidater', emails: ['rh@example.fr'] }),
+        offer({ id: 'offer:2', title: 'Product Manager', link: 'https://example.test/job/2', verdict: 'à surveiller', emails: ['rh@example.fr'] }),
       ],
       startedAt: '2026-05-14T07:55:00.000Z',
     })
