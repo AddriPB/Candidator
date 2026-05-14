@@ -321,9 +321,28 @@ test('cv: stocke les fichiers dans le sous-dossier du pseudo', () => {
     assert.equal(state.pseudo, 'adrien-test')
     assert.ok(state.storageDir.endsWith(path.join('cv', 'adrien-test')))
     assert.equal(state.files.length, 1)
-    assert.equal(state.activeFile, state.files[0].name)
-    assert.ok(state.files[0].name.startsWith('CV-Produit-'))
-    assert.ok(state.files[0].name.endsWith('.pdf'))
+    assert.equal(state.activeFile, 'CV Produit.pdf')
+    assert.equal(state.files[0].name, 'CV Produit.pdf')
+  })
+})
+
+test('cv: conserve le nom du CV et suffixe seulement les doublons', () => {
+  withCvEnv(() => {
+    const first = saveCvUpload({
+      originalName: 'Adrien Pujol Bertomeu.pdf',
+      buffer: Buffer.from('%PDF-1.4 first'),
+    })
+    const second = saveCvUpload({
+      originalName: 'Adrien Pujol Bertomeu.pdf',
+      buffer: Buffer.from('%PDF-1.4 second'),
+    })
+
+    assert.equal(first.activeFile, 'Adrien Pujol Bertomeu.pdf')
+    assert.equal(second.activeFile, 'Adrien Pujol Bertomeu (2).pdf')
+    assert.deepEqual(second.files.map((file) => file.name).sort(), [
+      'Adrien Pujol Bertomeu (2).pdf',
+      'Adrien Pujol Bertomeu.pdf',
+    ])
   })
 })
 

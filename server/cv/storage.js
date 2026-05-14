@@ -27,7 +27,7 @@ export function saveCvUpload({ originalName, buffer }) {
   const dir = userCvDir()
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
 
-  const fileName = versionedFileName(originalName)
+  const fileName = availableFileName(dir, originalName)
   const filePath = path.join(dir, fileName)
   fs.writeFileSync(filePath, buffer, { mode: 0o600 })
   writeActiveFile(dir, fileName)
@@ -95,11 +95,16 @@ function writeActiveFile(dir, fileName) {
   fs.writeFileSync(path.join(dir, ACTIVE_FILE), `${JSON.stringify({ activeFile: fileName }, null, 2)}\n`, { mode: 0o600 })
 }
 
-function versionedFileName(originalName) {
+function availableFileName(dir, originalName) {
   const safeName = sanitizeNewFileName(originalName)
+  if (!fs.existsSync(path.join(dir, safeName))) return safeName
+
   const parsed = path.parse(safeName)
-  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
-  return `${parsed.name}-${stamp}${parsed.ext.toLowerCase()}`
+  for (let index = 2; index < 1000; index += 1) {
+    const candidate = `${parsed.name} (${index})${parsed.ext.toLowerCase()}`
+    if (!fs.existsSync(path.join(dir, candidate))) return candidate
+  }
+  throw httpError(409, 'too_many_duplicate_cv_names')
 }
 
 function sanitizeNewFileName(fileName) {
@@ -108,11 +113,10 @@ function sanitizeNewFileName(fileName) {
   const ext = path.extname(base).toLowerCase()
   if (!ALLOWED_EXTENSIONS.has(ext)) throw httpError(415, 'unsupported_file_type')
   const name = path.basename(base, ext)
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-zA-Z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
+    .replace(/[\u0000-\u001f\u007f]+/g, '')
+    .replace(/[<>:"\\|?*]+/g, '')
     .slice(0, 80)
+    .trim()
   if (!name) throw httpError(400, 'invalid_file_name')
   return `${name}${ext}`
 }
