@@ -8,7 +8,7 @@ import { evaluateOffer } from '../server/radar/filter.js'
 import { normalizeOffer } from '../server/radar/normalizer.js'
 import { scoreOffer } from '../server/radar/scorer.js'
 import { loginHandler, requireAuth } from '../server/auth/index.js'
-import { cvPseudo, getCvState, saveCvUpload, setActiveCv } from '../server/cv/storage.js'
+import { cvPseudo, getCvState, saveApplicationMailTemplate, saveCvUpload, setActiveCv } from '../server/cv/storage.js'
 import { getLatestRadarOffers, saveRadarRun, saveSourceCheckLogs } from '../server/storage/database.js'
 
 const baseConfig = {
@@ -382,6 +382,26 @@ test('cv: utilise le dossier runtime du projet par defaut', () => {
     assert.equal(state.storageDir, path.resolve('cv', 'adri'))
     assert.equal(state.storageDir.includes('/home/pi/opportunity-radar-private'), false)
     if (!runtimeCvRootExisted) fs.rmSync(runtimeCvRoot, { recursive: true, force: true })
+  })
+})
+
+test('cv: stocke le mail de candidature dans le dossier du pseudo', () => {
+  withCvEnv(() => {
+    const state = saveApplicationMailTemplate({
+      firstName: 'Adrien',
+      lastName: 'Pujol',
+      phone: '06 00 00 00 00',
+      subjectTemplate: 'Candidature : [Intitulé du poste]',
+      bodyTemplate: 'Bonjour, poste [Intitulé du poste]. Tel 06 00 00 00 00. Adrien Pujol',
+    })
+
+    assert.equal(state.applicationMail.firstName, 'Adrien')
+    assert.equal(state.applicationMail.lastName, 'Pujol')
+    assert.equal(state.applicationMail.phone, '06 00 00 00 00')
+    assert.equal(state.applicationMail.titlePlaceholder, '[Intitulé du poste]')
+    assert.equal(state.applicationMail.subjectTemplate, 'Candidature : [Intitulé du poste]')
+    assert.ok(fs.existsSync(path.join(state.storageDir, '.application-mail.json')))
+    assert.equal(getCvState().applicationMail.bodyTemplate.includes('[Intitulé du poste]'), true)
   })
 })
 

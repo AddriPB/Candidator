@@ -166,6 +166,24 @@ export default function App() {
     }
   }
 
+  async function saveCvApplicationMail(applicationMail) {
+    setCvLoading(true)
+    setCvError('')
+    try {
+      const data = await api('/api/cv/application-mail', {
+        method: 'POST',
+        body: JSON.stringify(applicationMail),
+      })
+      setCvState(data)
+      setMessage('Texte de candidature mis à jour.')
+    } catch (error) {
+      if (handleAuthError(error)) return
+      setCvError(apiErrorMessage(error, 'Impossible d’enregistrer le texte de candidature.'))
+    } finally {
+      setCvLoading(false)
+    }
+  }
+
   function handleAuthError(error) {
     if (!(error instanceof ApiError) || error.status !== 401) return false
     clearSessionToken()
@@ -222,6 +240,7 @@ export default function App() {
                 cvState={cvState}
                 cvUploading={cvUploading}
                 onRefresh={loadCv}
+                onSaveApplicationMail={saveCvApplicationMail}
                 onSetActive={setActiveCv}
                 onUpload={uploadCv}
               />
@@ -340,9 +359,41 @@ function TestScreen({ checks, checksError, checksLoading, checksRunAt, onRunSour
   )
 }
 
-function CvScreen({ apiBase, cvError, cvLoading, cvState, cvUploading, onRefresh, onSetActive, onUpload }) {
+function CvScreen({ apiBase, cvError, cvLoading, cvState, cvUploading, onRefresh, onSaveApplicationMail, onSetActive, onUpload }) {
   const files = cvState?.files || []
   const activeFile = cvState?.activeFile || ''
+  const [applicationMail, setApplicationMail] = useState(defaultApplicationMail())
+  const [previewRole, setPreviewRole] = useState('po')
+  const previewTitle = ROLE_FILTERS.find((filter) => filter.value === previewRole)?.label || ''
+  const previewSubject = renderApplicationMailTemplate(applicationMail.subjectTemplate, previewTitle)
+  const previewBody = renderApplicationMailTemplate(applicationMail.bodyTemplate, previewTitle)
+
+  useEffect(() => {
+    if (!cvState?.applicationMail) return
+    setApplicationMail({
+      ...defaultApplicationMail(),
+      ...cvState.applicationMail,
+    })
+  }, [cvState?.applicationMail])
+
+  function updateApplicationMail(field, value) {
+    setApplicationMail((current) => ({ ...current, [field]: value }))
+  }
+
+  function applyDefaultApplicationMail() {
+    setApplicationMail((current) => ({
+      ...current,
+      subjectTemplate: defaultApplicationMailSubject(),
+      bodyTemplate: defaultApplicationMailBody(current),
+    }))
+  }
+
+  function submitApplicationMail(event) {
+    event.preventDefault()
+    const payload = hydrateApplicationMailIdentity(applicationMail)
+    setApplicationMail(payload)
+    onSaveApplicationMail(payload)
+  }
 
   return (
     <div className="stack">
@@ -377,6 +428,81 @@ function CvScreen({ apiBase, cvError, cvLoading, cvState, cvUploading, onRefresh
       {activeFile && <div className="notice">CV actif : {activeFile}</div>}
       {cvError && <div className="error">{cvError}</div>}
       {cvLoading && !cvState ? <p>Chargement des CV...</p> : null}
+
+      <form className="mail-editor" onSubmit={submitApplicationMail}>
+        <div className="mail-editor-header">
+          <div>
+            <h2>Mail de candidature</h2>
+            <p>Le placeholder [Intitulé du poste] sera remplacé par le poste sélectionné dans les offres.</p>
+          </div>
+          <button type="button" disabled={cvLoading} onClick={applyDefaultApplicationMail}>
+            Remplir avec le modèle
+          </button>
+        </div>
+
+        <div className="identity-grid">
+          <label>
+            Prénom
+            <input
+              autoComplete="given-name"
+              value={applicationMail.firstName}
+              onChange={(event) => updateApplicationMail('firstName', event.target.value)}
+            />
+          </label>
+          <label>
+            Nom
+            <input
+              autoComplete="family-name"
+              value={applicationMail.lastName}
+              onChange={(event) => updateApplicationMail('lastName', event.target.value)}
+            />
+          </label>
+          <label>
+            Téléphone
+            <input
+              autoComplete="tel"
+              value={applicationMail.phone}
+              onChange={(event) => updateApplicationMail('phone', event.target.value)}
+            />
+          </label>
+        </div>
+
+        <label>
+          Objet du mail
+          <input
+            value={applicationMail.subjectTemplate}
+            onChange={(event) => updateApplicationMail('subjectTemplate', event.target.value)}
+          />
+        </label>
+
+        <label>
+          Corps du mail
+          <textarea
+            rows={10}
+            value={applicationMail.bodyTemplate}
+            onChange={(event) => updateApplicationMail('bodyTemplate', event.target.value)}
+          />
+        </label>
+
+        <div className="toolbar mail-preview-toolbar">
+          <label>
+            Intitulé de prévisualisation
+            <select value={previewRole} onChange={(event) => setPreviewRole(event.target.value)}>
+              {ROLE_FILTERS.filter((filter) => filter.value !== 'all').map((filter) => (
+                <option key={filter.value} value={filter.value}>{filter.label}</option>
+              ))}
+            </select>
+          </label>
+          <button type="submit" disabled={cvLoading}>
+            Enregistrer le mail
+          </button>
+        </div>
+
+        <div className="mail-preview">
+          <strong>{previewSubject}</strong>
+          <pre>{previewBody}</pre>
+        </div>
+      </form>
 
       {!cvLoading && files.length === 0 ? (
         <div className="empty">Aucun CV trouvé dans le dossier du pseudo.</div>
@@ -554,6 +680,50 @@ function formatFileSize(value) {
   return new Intl.NumberFormat('fr-FR', {
     maximumFractionDigits: 1,
   }).format(Number(value || 0) / 1024 / 1024) + ' Mo'
+}
+
+function defaultApplicationMail() {
+  return {
+    firstName: '',
+    lastName: '',
+    phone: '',
+    titlePlaceholder: '[Intitulé du poste]',
+    subjectTemplate: defaultApplicationMailSubject(),
+    bodyTemplate: defaultApplicationMailBody({}),
+  }
+}
+
+function defaultApplicationMailSubject() {
+  return 'Candidature : [Intitulé du poste]'
+}
+
+function defaultApplicationMailBody({ firstName = '', lastName = '', phone = '' }) {
+  const signature = [firstName, lastName].filter(Boolean).join(' ').trim() || '[Prénom Nom]'
+  const contactPhone = String(phone || '').trim() || '[Téléphone]'
+  return `Bonjour,
+
+Je vous adresse ma candidature pour le poste de [Intitulé du poste].
+
+Vous trouverez mon CV en pièce jointe. Je suis disponible pour échanger par téléphone afin de vous présenter mon profil.
+
+Vous pouvez me joindre au ${contactPhone}.
+
+Bien cordialement,
+${signature}`
+}
+
+function renderApplicationMailTemplate(template, title) {
+  return String(template || '').replaceAll('[Intitulé du poste]', title)
+}
+
+function hydrateApplicationMailIdentity(applicationMail) {
+  const signature = [applicationMail.firstName, applicationMail.lastName].filter(Boolean).join(' ').trim()
+  return {
+    ...applicationMail,
+    bodyTemplate: String(applicationMail.bodyTemplate || '')
+      .replaceAll('[Téléphone]', String(applicationMail.phone || '').trim() || '[Téléphone]')
+      .replaceAll('[Prénom Nom]', signature || '[Prénom Nom]'),
+  }
 }
 
 function loginErrorMessage(error) {

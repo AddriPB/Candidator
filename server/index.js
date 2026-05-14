@@ -4,7 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getAuthDiagnostics, loginHandler, logoutHandler, meHandler, requireAuth } from './auth/index.js'
 import { checkSources } from './connectors/sourceChecks.js'
-import { cvDownloadPath, getCvState, saveCvUpload, setActiveCv } from './cv/storage.js'
+import { cvDownloadPath, getCvState, saveApplicationMailTemplate, saveCvUpload, setActiveCv } from './cv/storage.js'
 import { getLatestRadarOffers, getLatestSourceChecks, openDatabase, pruneOldData, saveSourceCheckLogs } from './storage/database.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -85,6 +85,14 @@ app.post('/api/cv/upload', requireAuth, express.raw({
 app.post('/api/cv/active', requireAuth, (req, res, next) => {
   try {
     res.json(setActiveCv(req.body?.fileName))
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.post('/api/cv/application-mail', requireAuth, (req, res, next) => {
+  try {
+    res.json(saveApplicationMailTemplate(req.body))
   } catch (error) {
     next(error)
   }

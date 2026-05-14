@@ -3,9 +3,11 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ACTIVE_FILE = '.active-cv.json'
+const APPLICATION_MAIL_FILE = '.application-mail.json'
 const ALLOWED_EXTENSIONS = new Set(['.pdf', '.doc', '.docx'])
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+const TITLE_PLACEHOLDER = '[Intitulé du poste]'
 
 export function getCvState() {
   const dir = userCvDir()
@@ -17,6 +19,7 @@ export function getCvState() {
     storageDir: dir,
     activeFile,
     files,
+    applicationMail: readApplicationMail(dir),
   }
 }
 
@@ -49,6 +52,18 @@ export function cvDownloadPath(fileName) {
   const filePath = path.join(dir, safeName)
   if (!fs.existsSync(filePath)) throw httpError(404, 'cv_not_found')
   return { filePath, fileName: safeName }
+}
+
+export function saveApplicationMailTemplate(input = {}) {
+  const dir = userCvDir()
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const applicationMail = normalizeApplicationMail(input)
+  fs.writeFileSync(
+    path.join(dir, APPLICATION_MAIL_FILE),
+    `${JSON.stringify(applicationMail, null, 2)}\n`,
+    { mode: 0o600 },
+  )
+  return getCvState()
 }
 
 export function cvPseudo() {
@@ -89,6 +104,64 @@ function readActiveFile(dir, files) {
     // Missing or invalid metadata means no active CV has been selected.
   }
   return ''
+}
+
+function readApplicationMail(dir) {
+  try {
+    return normalizeApplicationMail(JSON.parse(fs.readFileSync(path.join(dir, APPLICATION_MAIL_FILE), 'utf8')))
+  } catch {
+    return normalizeApplicationMail({})
+  }
+}
+
+function normalizeApplicationMail(input = {}) {
+  const firstName = cleanText(input.firstName, 80)
+  const lastName = cleanText(input.lastName, 80)
+  const phone = cleanText(input.phone, 40)
+  const subjectTemplate = cleanTemplate(input.subjectTemplate, defaultSubjectTemplate())
+  const bodyTemplate = cleanTemplate(input.bodyTemplate, defaultBodyTemplate({ firstName, lastName, phone }))
+
+  return {
+    firstName,
+    lastName,
+    phone,
+    titlePlaceholder: TITLE_PLACEHOLDER,
+    subjectTemplate,
+    bodyTemplate,
+  }
+}
+
+function defaultSubjectTemplate() {
+  return `Candidature : ${TITLE_PLACEHOLDER}`
+}
+
+function defaultBodyTemplate({ firstName, lastName, phone }) {
+  const signature = [firstName, lastName].filter(Boolean).join(' ').trim() || '[Prénom Nom]'
+  const contactPhone = phone || '[Téléphone]'
+  return `Bonjour,
+
+Je vous adresse ma candidature pour le poste de ${TITLE_PLACEHOLDER}.
+
+Vous trouverez mon CV en pièce jointe. Je suis disponible pour échanger par téléphone afin de vous présenter mon profil.
+
+Vous pouvez me joindre au ${contactPhone}.
+
+Bien cordialement,
+${signature}`
+}
+
+function cleanTemplate(value, fallback) {
+  const text = cleanText(value, 5000)
+  return text || fallback
+}
+
+function cleanText(value, maxLength) {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+/g, '')
+    .slice(0, maxLength)
+    .trim()
 }
 
 function writeActiveFile(dir, fileName) {
