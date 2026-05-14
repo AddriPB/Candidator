@@ -28,18 +28,22 @@ export function pruneOldData(db, retentionDays = Number(process.env.DATA_RETENTI
     refreshJsonStore(db)
     const beforeSourceChecks = db.data.sourceChecks.length
     const beforeRadarRuns = db.data.radarRuns.length
+    const beforeOfferEmails = db.data.offerEmails.length
     db.data.sourceChecks = db.data.sourceChecks.filter((row) => row.checkedAt >= cutoff)
     db.data.radarRuns = db.data.radarRuns.filter((row) => row.startedAt >= cutoff)
+    db.data.offerEmails = db.data.offerEmails.filter((row) => row.runStartedAt >= cutoff)
     writeJsonStore(db)
     return {
       cutoff,
       sourceChecks: beforeSourceChecks - db.data.sourceChecks.length,
       radarRuns: beforeRadarRuns - db.data.radarRuns.length,
+      offerEmails: beforeOfferEmails - db.data.offerEmails.length,
     }
   }
   const sourceChecks = db.db.prepare('DELETE FROM source_checks WHERE checked_at < ?').run(cutoff).changes
   const radarRuns = db.db.prepare('DELETE FROM radar_runs WHERE started_at < ?').run(cutoff).changes
-  return { cutoff, sourceChecks, radarRuns }
+  const offerEmails = db.db.prepare('DELETE FROM offer_emails WHERE run_started_at < ?').run(cutoff).changes
+  return { cutoff, sourceChecks, radarRuns, offerEmails }
 }
 
 export function saveSourceCheckLogs(db, logs) {
@@ -69,29 +73,44 @@ export function saveSourceCheckLogs(db, logs) {
 
 export function saveRadarRun(db, { startedAt, summary, logs, offers, reports }) {
   saveSourceCheckLogs(db, logs)
+  const offerEmails = collectOfferEmails({ startedAt, offers })
+  const storedOffers = offers.filter(isVisibleOffer)
   if (db.kind === 'json') {
-    db.data.radarRuns.push({ startedAt, summary, logs, offers, reports })
+    refreshJsonStore(db)
+    db.data.radarRuns.push({ startedAt, summary, logs, offers: storedOffers, reports })
+    db.data.offerEmails.push(...offerEmails)
     writeJsonStore(db)
     return
   }
-  db.db.prepare(`
-    INSERT INTO radar_runs (started_at, summary_json, logs_json, offers_json, markdown_path, json_path)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(
-    startedAt,
-    JSON.stringify(summary),
-    JSON.stringify(logs),
-    JSON.stringify(offers),
-    reports.markdownPath,
-    reports.jsonPath,
-  )
+  const insertRun = db.db.prepare(`
+      INSERT INTO radar_runs (started_at, summary_json, logs_json, offers_json, markdown_path, json_path)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `)
+  const deleteEmails = db.db.prepare('DELETE FROM offer_emails WHERE run_started_at = ?')
+  const insertEmail = db.db.prepare(`
+      INSERT INTO offer_emails (run_started_at, offer_id, source, verdict, email)
+      VALUES (?, ?, ?, ?, ?)
+    `)
+  const trx = db.db.transaction(() => {
+    insertRun.run(
+      startedAt,
+      JSON.stringify(summary),
+      JSON.stringify(logs),
+      JSON.stringify(storedOffers),
+      reports.markdownPath,
+      reports.jsonPath,
+    )
+    deleteEmails.run(startedAt)
+    for (const row of offerEmails) insertEmail.run(row.runStartedAt, row.offerId, row.source, row.verdict, row.email)
+  })
+  trx()
 }
 
 export function getLatestRadarOffers(db) {
   if (db.kind === 'json') {
     refreshJsonStore(db)
     const row = [...db.data.radarRuns].sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))[0]
-    return { startedAt: row?.startedAt || null, offers: (row?.offers || []).map(toPublicOffer) }
+    return { startedAt: row?.startedAt || null, offers: (row?.offers || []).filter(isVisibleOffer).map(toPublicOffer) }
   }
   const row = db.db.prepare(`
     SELECT started_at AS startedAt, offers_json AS offersJson
@@ -111,7 +130,7 @@ export function getLatestRadarOffers(db) {
 
   return {
     startedAt: row.startedAt,
-    offers: offers.map(toPublicOffer),
+    offers: offers.filter(isVisibleOffer).map(toPublicOffer),
   }
 }
 
@@ -152,6 +171,8 @@ function toPublicOffer(offer) {
     currency: offer.currency,
     publishedAt: offer.publishedAt,
     link: offer.link,
+    emails: Array.isArray(offer.emails) ? offer.emails : [],
+    hasEmail: Boolean(offer.hasEmail || offer.emails?.length),
     level: offer.level,
     collectedAt: offer.collectedAt,
     query: offer.query,
@@ -169,6 +190,10 @@ function toPublicOffer(offer) {
       rejectReasons: offer.evaluation.rejectReasons,
     } : null,
   }
+}
+
+function isVisibleOffer(offer) {
+  return offer.verdict !== 'à rejeter' && offer.evaluation?.status !== 'à rejeter'
 }
 
 function migrate(db) {
@@ -192,6 +217,17 @@ function migrate(db) {
       markdown_path TEXT NOT NULL,
       json_path TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS offer_emails (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_started_at TEXT NOT NULL,
+      offer_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      verdict TEXT NOT NULL,
+      email TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_offer_emails_run_started_at ON offer_emails(run_started_at);
   `)
 
   ensureColumn(db, 'source_checks', 'offers_count', 'INTEGER NOT NULL DEFAULT 0')
@@ -223,10 +259,24 @@ function normalizeJsonStore(data) {
   return {
     sourceChecks: Array.isArray(data?.sourceChecks) ? data.sourceChecks : [],
     radarRuns: Array.isArray(data?.radarRuns) ? data.radarRuns : [],
+    offerEmails: Array.isArray(data?.offerEmails) ? data.offerEmails : [],
   }
 }
 
 function writeJsonStore(store) {
   fs.mkdirSync(path.dirname(store.path), { recursive: true })
   fs.writeFileSync(store.path, `${JSON.stringify(store.data, null, 2)}\n`)
+}
+
+function collectOfferEmails({ startedAt, offers }) {
+  return offers.flatMap((offer) => {
+    const emails = Array.isArray(offer.emails) ? offer.emails : []
+    return emails.map((email) => ({
+      runStartedAt: startedAt,
+      offerId: offer.id,
+      source: offer.source,
+      verdict: offer.verdict || '',
+      email,
+    }))
+  })
 }

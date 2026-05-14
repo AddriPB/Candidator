@@ -4,6 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getAuthDiagnostics, loginHandler, logoutHandler, meHandler, requireAuth } from './auth/index.js'
 import { checkSources } from './connectors/sourceChecks.js'
+import { cvDownloadPath, getCvState, saveCvUpload, setActiveCv } from './cv/storage.js'
 import { getLatestRadarOffers, getLatestSourceChecks, openDatabase, pruneOldData, saveSourceCheckLogs } from './storage/database.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -63,6 +64,41 @@ app.get('/api/offers', requireAuth, (_req, res) => {
   res.json(getLatestRadarOffers(db))
 })
 
+app.get('/api/cv', requireAuth, (_req, res) => {
+  res.json(getCvState())
+})
+
+app.post('/api/cv/upload', requireAuth, express.raw({
+  limit: '10mb',
+  type: ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/octet-stream'],
+}), (req, res, next) => {
+  try {
+    res.json(saveCvUpload({
+      originalName: req.headers['x-file-name'],
+      buffer: req.body,
+    }))
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.post('/api/cv/active', requireAuth, (req, res, next) => {
+  try {
+    res.json(setActiveCv(req.body?.fileName))
+  } catch (error) {
+    next(error)
+  }
+})
+
+app.get('/api/cv/download/:fileName', requireAuth, (req, res, next) => {
+  try {
+    const file = cvDownloadPath(req.params.fileName)
+    res.download(file.filePath, file.fileName)
+  } catch (error) {
+    next(error)
+  }
+})
+
 app.post('/api/admin/prune', requireAuth, (_req, res) => {
   res.json({ pruned: pruneOldData(db) })
 })
@@ -75,7 +111,7 @@ app.get(/.*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')))
 
 app.use((error, _req, res, _next) => {
   console.error(error)
-  res.status(500).json({ error: 'internal_error' })
+  res.status(error.status || 500).json({ error: error.status ? error.message : 'internal_error' })
 })
 
 function corsOrigins() {

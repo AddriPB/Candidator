@@ -19,9 +19,15 @@ export function dedupeOffers(offers) {
     if (!existing.salaryMin && offer.salaryMin) existing.salaryMin = offer.salaryMin
     if (!existing.salaryMax && offer.salaryMax) existing.salaryMax = offer.salaryMax
     if (!existing.remote && offer.remote) existing.remote = offer.remote
+    existing.emails = mergeEmails(existing.emails, offer.emails)
+    existing.hasEmail = existing.emails.length > 0
   }
 
   return { offers: Array.from(seen.values()), duplicates }
+}
+
+function mergeEmails(first = [], second = []) {
+  return Array.from(new Set([...first, ...second].filter(Boolean))).sort()
 }
 
 function dedupeKey(offer) {

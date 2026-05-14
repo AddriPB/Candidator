@@ -25,3 +25,8 @@ logs/
 .DS_Store
 .claude/
 SETUP.txt
+
+# Local-only notes and deployment context
+AUTOMATISATION_CANDIDATURES_LOCAL_ONLY.md
+CV_STORAGE_SETUP.txt
+PI_DEPLOYMENT_CONTEXT_CODEX.md

@@ -5,9 +5,11 @@ import os from 'node:os'
 import path from 'node:path'
 import { dedupeOffers } from '../server/radar/dedupe.js'
 import { evaluateOffer } from '../server/radar/filter.js'
+import { normalizeOffer } from '../server/radar/normalizer.js'
 import { scoreOffer } from '../server/radar/scorer.js'
 import { loginHandler, requireAuth } from '../server/auth/index.js'
-import { getLatestRadarOffers, saveSourceCheckLogs } from '../server/storage/database.js'
+import { cvPseudo, getCvState, saveCvUpload, setActiveCv } from '../server/cv/storage.js'
+import { getLatestRadarOffers, saveRadarRun, saveSourceCheckLogs } from '../server/storage/database.js'
 
 const baseConfig = {
   contrat: 'CDI',
@@ -67,6 +69,20 @@ test('filtrage rôle: rejette un développeur IA pur', () => {
   assert.equal(evaluation.status, 'à rejeter')
 })
 
+test('filtrage rôle: conserve un poste cible même avec vocabulaire développement', () => {
+  const candidate = offer({
+    title: 'Développeur logiciel - équipe produit',
+    description: 'CDI Paris hybride. Poste recherché Product Owner senior pour piloter le backlog et coordonner le développement.',
+  })
+  const evaluation = evaluateOffer(candidate, baseConfig)
+  const scoring = scoreOffer(candidate, evaluation, baseConfig)
+
+  assert.equal(evaluation.role.status, 'ambiguous')
+  assert.equal(evaluation.status, 'à vérifier')
+  assert.equal(scoring.verdict, 'à candidater')
+  assert.ok(!evaluation.rejectReasons.includes('hors rôle'))
+})
+
 test('filtrage CDI: rejette un CDD', () => {
   const evaluation = evaluateOffer(offer({ contract: 'CDD' }), baseConfig)
   assert.ok(evaluation.rejectReasons.includes('hors CDI'))
@@ -120,6 +136,29 @@ test('déduplication: fusionne deux offres avec le même lien', () => {
   assert.deepEqual(result.offers[0].sources.sort(), ['adzuna', 'jsearch'])
 })
 
+test('normalisation: extrait les emails présents dans les données API', () => {
+  const candidate = normalizeOffer({
+    source: 'test',
+    sourceId: '1',
+    title: 'Product Owner',
+    company: 'Example',
+    description: 'Candidature à jobs@example.fr ou RH@EXAMPLE.fr.',
+    raw: { contact: { email: 'talent@example.com' } },
+  })
+
+  assert.deepEqual(candidate.emails, ['jobs@example.fr', 'rh@example.fr', 'talent@example.com'])
+  assert.equal(candidate.hasEmail, true)
+})
+
+test('déduplication: fusionne les emails détectés', () => {
+  const first = offer({ id: 'a', source: 'adzuna', sourceId: 'a', emails: ['a@example.fr'], hasEmail: true })
+  const second = offer({ id: 'b', source: 'jsearch', sourceId: 'b', emails: ['b@example.fr', 'a@example.fr'], hasEmail: true })
+  const result = dedupeOffers([first, second])
+
+  assert.deepEqual(result.offers[0].emails, ['a@example.fr', 'b@example.fr'])
+  assert.equal(result.offers[0].hasEmail, true)
+})
+
 test('stockage JSON: relit les runs écrits par un autre process', () => {
   const jsonPath = makeJsonStore({
     sourceChecks: [],
@@ -135,6 +174,80 @@ test('stockage JSON: relit les runs écrits par un autre process', () => {
   assert.equal(latest.startedAt, '2026-05-14T05:15:06.048Z')
   assert.equal(latest.offers.length, 1)
   assert.equal(latest.offers[0].title, 'Product Manager')
+})
+
+test('stockage JSON: expose les emails des offres publiques', () => {
+  const jsonPath = makeJsonStore({
+    sourceChecks: [],
+    radarRuns: [{
+      startedAt: '2026-05-14T05:15:06.048Z',
+      offers: [offer({ id: 'json:1', emails: ['contact@example.fr'], hasEmail: true })],
+    }],
+  })
+  const db = { kind: 'json', path: jsonPath, data: { sourceChecks: [], radarRuns: [] } }
+
+  const latest = getLatestRadarOffers(db)
+
+  assert.deepEqual(latest.offers[0].emails, ['contact@example.fr'])
+  assert.equal(latest.offers[0].hasEmail, true)
+})
+
+test('stockage JSON: masque les offres rejetées déjà présentes', () => {
+  const jsonPath = makeJsonStore({
+    sourceChecks: [],
+    radarRuns: [{
+      startedAt: '2026-05-14T05:15:06.048Z',
+      offers: [
+        offer({ id: 'json:1', title: 'Product Manager', verdict: 'à candidater' }),
+        offer({ id: 'json:2', title: 'Développeur IA', verdict: 'à rejeter' }),
+      ],
+    }],
+  })
+  const db = { kind: 'json', path: jsonPath, data: { sourceChecks: [], radarRuns: [] } }
+
+  const latest = getLatestRadarOffers(db)
+
+  assert.equal(latest.offers.length, 1)
+  assert.equal(latest.offers[0].id, 'json:1')
+})
+
+test('stockage JSON: ne persiste pas les offres rejetées', () => {
+  const jsonPath = makeJsonStore({ sourceChecks: [], radarRuns: [] })
+  const db = { kind: 'json', path: jsonPath, data: { sourceChecks: [], radarRuns: [] } }
+
+  saveRadarRun(db, {
+    startedAt: '2026-05-14T05:15:06.048Z',
+    summary: {},
+    logs: [],
+    offers: [
+      offer({ id: 'json:1', title: 'Product Manager', verdict: 'à candidater' }),
+      offer({ id: 'json:2', title: 'Développeur IA', verdict: 'à rejeter' }),
+    ],
+    reports: { markdownPath: '', jsonPath: '' },
+  })
+
+  const stored = JSON.parse(fs.readFileSync(jsonPath, 'utf8'))
+  assert.equal(stored.radarRuns[0].offers.length, 1)
+  assert.equal(stored.radarRuns[0].offers[0].id, 'json:1')
+})
+
+test('stockage JSON: journalise les emails de toutes les offres, même rejetées', () => {
+  const jsonPath = makeJsonStore({ sourceChecks: [], radarRuns: [] })
+  const db = { kind: 'json', path: jsonPath, data: { sourceChecks: [], radarRuns: [], offerEmails: [] } }
+
+  saveRadarRun(db, {
+    startedAt: '2026-05-14T05:15:06.048Z',
+    summary: {},
+    logs: [],
+    offers: [
+      offer({ id: 'json:1', title: 'Product Manager', verdict: 'à candidater', emails: ['apply@example.fr'], hasEmail: true }),
+      offer({ id: 'json:2', title: 'Développeur IA', verdict: 'à rejeter', emails: ['reject@example.fr'], hasEmail: true }),
+    ],
+    reports: { markdownPath: '', jsonPath: '' },
+  })
+
+  const stored = JSON.parse(fs.readFileSync(jsonPath, 'utf8'))
+  assert.deepEqual(stored.offerEmails.map((row) => row.email).sort(), ['apply@example.fr', 'reject@example.fr'])
 })
 
 test('stockage JSON: une écriture API ne supprime pas un run ajouté sur disque', () => {
@@ -197,6 +310,46 @@ test('auth: rejette une requête protégée sans cookie ni Bearer', () => {
   })
 })
 
+test('cv: stocke les fichiers dans le sous-dossier du pseudo', () => {
+  withCvEnv(() => {
+    const state = saveCvUpload({
+      originalName: 'CV Produit.pdf',
+      buffer: Buffer.from('%PDF-1.4 test'),
+    })
+
+    assert.equal(cvPseudo(), 'adrien-test')
+    assert.equal(state.pseudo, 'adrien-test')
+    assert.ok(state.storageDir.endsWith(path.join('cv', 'adrien-test')))
+    assert.equal(state.files.length, 1)
+    assert.equal(state.activeFile, state.files[0].name)
+    assert.ok(state.files[0].name.startsWith('CV-Produit-'))
+    assert.ok(state.files[0].name.endsWith('.pdf'))
+  })
+})
+
+test('cv: liste un CV ajoute manuellement et permet de le rendre actif', () => {
+  withCvEnv(() => {
+    const initial = getCvState()
+    const manualPath = path.join(initial.storageDir, 'manual.docx')
+    fs.writeFileSync(manualPath, 'docx')
+
+    const updated = setActiveCv('manual.docx')
+
+    assert.equal(updated.files.some((file) => file.name === 'manual.docx'), true)
+    assert.equal(updated.activeFile, 'manual.docx')
+  })
+})
+
+test('cv: utilise adri comme pseudo par defaut', () => {
+  withCvEnv(() => {
+    delete process.env.CV_USER_PSEUDO
+    delete process.env.AUTH_USERNAME
+
+    assert.equal(cvPseudo(), 'adri')
+    assert.ok(getCvState().storageDir.endsWith(path.join('cv', 'adri')))
+  })
+})
+
 function makeJsonStore(data) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-'))
   const jsonPath = path.join(dir, 'store.json')
@@ -220,6 +373,29 @@ function withAuthEnv(fn) {
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }
+  }
+}
+
+function withCvEnv(fn) {
+  const previous = {
+    CV_STORAGE_DIR: process.env.CV_STORAGE_DIR,
+    CV_USER_PSEUDO: process.env.CV_USER_PSEUDO,
+    AUTH_USERNAME: process.env.AUTH_USERNAME,
+    OPPORTUNITY_RADAR_PRIVATE_DIR: process.env.OPPORTUNITY_RADAR_PRIVATE_DIR,
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-cv-'))
+  process.env.CV_STORAGE_DIR = path.join(dir, 'cv')
+  process.env.CV_USER_PSEUDO = ''
+  process.env.AUTH_USERNAME = 'Adrien Test'
+  delete process.env.OPPORTUNITY_RADAR_PRIVATE_DIR
+  try {
+    fn()
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    fs.rmSync(dir, { recursive: true, force: true })
   }
 }
 

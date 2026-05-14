@@ -81,10 +81,13 @@ export function evaluateOffer(offer, config) {
 }
 
 export function detectRole(title, text = title) {
-  if (hasClearTargetRole(title)) return { status: 'clear', label: 'rôle cible clair' }
+  const targetInTitle = hasClearTargetRole(title)
+  const targetInText = hasClearTargetRole(text)
+
+  if (targetInTitle) return { status: 'clear', label: 'rôle cible clair' }
   if (includesAny(title, COMPATIBLE_ROLES)) return { status: 'compatible', label: 'chef de projet digital compatible' }
+  if (targetInText) return { status: 'ambiguous', label: 'rôle cible dans la description', reason: 'rôle ambigu' }
   if (includesAny(title, EXCLUDED_ROLES)) return { status: 'reject', label: 'rôle exclu' }
-  if (hasClearTargetRole(text)) return { status: 'ambiguous', label: 'rôle cible dans la description', reason: 'rôle ambigu' }
   if (includesAny(text, EXCLUDED_ROLES) && !includesAny(text, PRODUCT_CONTEXT)) return { status: 'reject', label: 'rôle trop technique' }
   return { status: 'reject', label: 'rôle hors cible' }
 }

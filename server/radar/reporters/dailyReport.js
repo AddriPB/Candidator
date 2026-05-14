@@ -25,6 +25,8 @@ Offres scorées : ${summary.scoredOffers}
 À candidater : ${summary.toApply}
 À surveiller : ${summary.toWatch}
 À rejeter : ${summary.toReject}
+Offres avec email : ${summary.emails?.offersWithEmail || 0}
+À candidater avec email : ${summary.emails?.toApplyWithEmail || 0} (${summary.emails?.toApplyEmailRate || 0}%)
 
 ## Top offres à candidater
 ${listTopOffers(toApply)}
@@ -60,12 +62,17 @@ Télétravail : ${safe(offer.evaluation.remote.label)}
 Contrat : ${safe(offer.contract || offer.evaluation.contract.label)}
 Rémunération : ${formatSalary(offer)}
 Source : ${safe(offer.source)}
+Emails : ${formatEmails(offer)}
 Lien : ${offer.link || 'Non renseigné'}
 Score : ${offer.score}/100
 Verdict : ${offer.verdict}
 Pourquoi : ${offer.why}
 Angle de candidature : ${offer.applicationAngle}
 Actions proposées : ${offer.verdict === 'à candidater' ? 'Préparer une candidature ciblée après validation légère.' : 'Vérifier les zones floues avant décision.'}`
+}
+
+function formatEmails(offer) {
+  return Array.isArray(offer.emails) && offer.emails.length ? offer.emails.join(', ') : 'Aucun email détecté'
 }
 
 function sortByScore(offers) {

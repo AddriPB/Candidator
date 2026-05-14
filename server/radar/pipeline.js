@@ -30,14 +30,22 @@ export async function runDailyRadar({ config, db = null, outputDir = process.env
 
 function buildSummary(offers, logs, duplicatesRemoved) {
   const rejected = offers.filter((offer) => offer.verdict === 'à rejeter')
+  const toApply = offers.filter((offer) => offer.verdict === 'à candidater')
+  const offersWithEmail = offers.filter((offer) => offer.hasEmail || offer.emails?.length)
+  const toApplyWithEmail = toApply.filter((offer) => offer.hasEmail || offer.emails?.length)
   return {
     opportunitiesDetected: logs.reduce((sum, log) => sum + log.offersCount, 0),
     duplicatesRemoved,
     rejectedOutOfTarget: rejected.length,
     scoredOffers: offers.length,
-    toApply: offers.filter((offer) => offer.verdict === 'à candidater').length,
+    toApply: toApply.length,
     toWatch: offers.filter((offer) => offer.verdict === 'à surveiller').length,
     toReject: rejected.length,
+    emails: {
+      offersWithEmail: offersWithEmail.length,
+      toApplyWithEmail: toApplyWithEmail.length,
+      toApplyEmailRate: toApply.length ? Math.round((toApplyWithEmail.length / toApply.length) * 10000) / 100 : 0,
+    },
     rejectBreakdown: {
       role: countReject(rejected, 'hors rôle'),
       contract: countReject(rejected, 'hors CDI'),

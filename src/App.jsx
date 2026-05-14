@@ -27,6 +27,10 @@ export default function App() {
   const [checksRunAt, setChecksRunAt] = useState(null)
   const [checksLoading, setChecksLoading] = useState(false)
   const [checksError, setChecksError] = useState('')
+  const [cvState, setCvState] = useState(null)
+  const [cvLoading, setCvLoading] = useState(false)
+  const [cvError, setCvError] = useState('')
+  const [cvUploading, setCvUploading] = useState(false)
 
   const api = useMemo(() => createApi(API_BASE), [])
   const filteredOffers = useMemo(
@@ -54,6 +58,11 @@ export default function App() {
     if (!authenticated) return
     loadOffers()
   }, [authenticated])
+
+  useEffect(() => {
+    if (!authenticated || view !== 'cv') return
+    loadCv()
+  }, [authenticated, view])
 
   async function login(event) {
     event.preventDefault()
@@ -109,6 +118,54 @@ export default function App() {
     }
   }
 
+  async function loadCv() {
+    setCvLoading(true)
+    setCvError('')
+    try {
+      const data = await api('/api/cv')
+      setCvState(data)
+    } catch (error) {
+      if (handleAuthError(error)) return
+      setCvError(apiErrorMessage(error, 'Impossible de charger les CV.'))
+    } finally {
+      setCvLoading(false)
+    }
+  }
+
+  async function uploadCv(file) {
+    if (!file) return
+    setCvUploading(true)
+    setCvError('')
+    try {
+      const data = await uploadFile(`${API_BASE}/api/cv/upload`, file)
+      setCvState(data)
+      setMessage('CV importé et défini comme actif.')
+    } catch (error) {
+      if (handleAuthError(error)) return
+      setCvError(apiErrorMessage(error, 'Impossible d’importer le CV.'))
+    } finally {
+      setCvUploading(false)
+    }
+  }
+
+  async function setActiveCv(fileName) {
+    setCvLoading(true)
+    setCvError('')
+    try {
+      const data = await api('/api/cv/active', {
+        method: 'POST',
+        body: JSON.stringify({ fileName }),
+      })
+      setCvState(data)
+      setMessage('CV actif mis à jour.')
+    } catch (error) {
+      if (handleAuthError(error)) return
+      setCvError(apiErrorMessage(error, 'Impossible de sélectionner le CV actif.'))
+    } finally {
+      setCvLoading(false)
+    }
+  }
+
   function handleAuthError(error) {
     if (!(error instanceof ApiError) || error.status !== 401) return false
     clearSessionToken()
@@ -119,7 +176,7 @@ export default function App() {
 
   function navigate(nextView) {
     const basePath = window.location.pathname.startsWith('/Opportunity-Radar') ? '/Opportunity-Radar' : ''
-    const nextPath = nextView === 'test' ? `${basePath}/test` : `${basePath}/`
+    const nextPath = nextView === 'test' ? `${basePath}/test` : nextView === 'cv' ? `${basePath}/cv` : `${basePath}/`
     window.history.pushState({}, '', nextPath)
     setView(nextView)
   }
@@ -149,12 +206,26 @@ export default function App() {
               <button className={view === 'offers' ? 'active' : ''} type="button" onClick={() => navigate('offers')}>
                 Offres
               </button>
+              <button className={view === 'cv' ? 'active' : ''} type="button" onClick={() => navigate('cv')}>
+                CV
+              </button>
               <button className={view === 'test' ? 'active' : ''} type="button" onClick={() => navigate('test')}>
                 Test
               </button>
             </nav>
 
-            {view === 'test' ? (
+            {view === 'cv' ? (
+              <CvScreen
+                apiBase={API_BASE}
+                cvError={cvError}
+                cvLoading={cvLoading}
+                cvState={cvState}
+                cvUploading={cvUploading}
+                onRefresh={loadCv}
+                onSetActive={setActiveCv}
+                onUpload={uploadCv}
+              />
+            ) : view === 'test' ? (
               <TestScreen
                 checks={checks}
                 checksError={checksError}
@@ -184,6 +255,8 @@ export default function App() {
 }
 
 function OffersScreen({ filteredOffers, offers, offersError, offersLoading, offersRunAt, onRefresh, roleFilter, setRoleFilter }) {
+  const visibleOffersWithEmail = filteredOffers.filter((offer) => offer.hasEmail || offer.emails?.length).length
+
   return (
     <div className="stack">
       <div className="toolbar">
@@ -201,6 +274,7 @@ function OffersScreen({ filteredOffers, offers, offersError, offersLoading, offe
       <div className="summary">
         <strong>{filteredOffers.length}</strong>
         <span>offre{filteredOffers.length > 1 ? 's' : ''} affichée{filteredOffers.length > 1 ? 's' : ''}</span>
+        <span>{visibleOffersWithEmail} avec email</span>
         {offersRunAt && <span>Dernier run : {formatDateTime(offersRunAt)}</span>}
       </div>
 
@@ -227,7 +301,15 @@ function OffersScreen({ filteredOffers, offers, offersError, offersLoading, offe
                 {Number.isFinite(offer.score) && <span>{offer.score}/100</span>}
                 {offer.remote && <span>{offer.remote}</span>}
                 {formatSalary(offer) && <span>{formatSalary(offer)}</span>}
+                <span>{formatEmailPresence(offer)}</span>
               </div>
+              {offer.emails?.length > 0 && (
+                <div className="emails" aria-label="Emails détectés">
+                  {offer.emails.map((email) => (
+                    <a key={email} href={`mailto:${email}`}>{email}</a>
+                  ))}
+                </div>
+              )}
               {offer.link && <a href={offer.link} target="_blank" rel="noreferrer">Voir l'offre</a>}
             </article>
           ))}
@@ -258,6 +340,74 @@ function TestScreen({ checks, checksError, checksLoading, checksRunAt, onRunSour
   )
 }
 
+function CvScreen({ apiBase, cvError, cvLoading, cvState, cvUploading, onRefresh, onSetActive, onUpload }) {
+  const files = cvState?.files || []
+  const activeFile = cvState?.activeFile || ''
+
+  return (
+    <div className="stack">
+      <div className="toolbar cv-toolbar">
+        <label>
+          Importer un CV
+          <input
+            accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            disabled={cvUploading}
+            type="file"
+            onChange={(event) => {
+              const file = event.target.files?.[0]
+              event.target.value = ''
+              onUpload(file)
+            }}
+          />
+        </label>
+        <button type="button" disabled={cvLoading || cvUploading} onClick={onRefresh}>
+          Actualiser
+        </button>
+      </div>
+
+      {cvState && (
+        <div className="summary">
+          <strong>{files.length}</strong>
+          <span>CV stocké{files.length > 1 ? 's' : ''}</span>
+          <span>Pseudo : {cvState.pseudo}</span>
+          <span>Dossier : {cvState.storageDir}</span>
+        </div>
+      )}
+
+      {activeFile && <div className="notice">CV actif : {activeFile}</div>}
+      {cvError && <div className="error">{cvError}</div>}
+      {cvLoading && !cvState ? <p>Chargement des CV...</p> : null}
+
+      {!cvLoading && files.length === 0 ? (
+        <div className="empty">Aucun CV trouvé dans le dossier du pseudo.</div>
+      ) : (
+        <div className="cv-list">
+          {files.map((file) => (
+            <article className={`cv-item ${file.name === activeFile ? 'active' : ''}`} key={file.name}>
+              <div>
+                <h2>{file.name}</h2>
+                <p>{formatFileSize(file.size)} · Modifié le {formatDateTime(file.updatedAt)}</p>
+              </div>
+              <div className="cv-actions">
+                {file.name === activeFile ? (
+                  <span className="status-pill">Actif</span>
+                ) : (
+                  <button type="button" disabled={cvLoading || cvUploading} onClick={() => onSetActive(file.name)}>
+                    Rendre actif
+                  </button>
+                )}
+                <a href={`${apiBase}/api/cv/download/${encodeURIComponent(file.name)}`} target="_blank" rel="noreferrer">
+                  Télécharger
+                </a>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function createApi(apiBase) {
   return async function api(path, options = {}) {
     let res
@@ -277,6 +427,24 @@ function createApi(apiBase) {
     if (!res.ok) throw new ApiError('http', { status: res.status, statusText: res.statusText, data })
     return data
   }
+}
+
+async function uploadFile(url, file) {
+  const token = readSessionToken()
+  const headers = {
+    'Content-Type': file.type || 'application/octet-stream',
+    'X-File-Name': file.name,
+  }
+  if (token) headers.Authorization = `Bearer ${token}`
+  const res = await fetch(url, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: await file.arrayBuffer(),
+  })
+  const data = await readResponseBody(res)
+  if (!res.ok) throw new ApiError('http', { status: res.status, statusText: res.statusText, data })
+  return data
 }
 
 function saveSessionToken(token) {
@@ -312,7 +480,9 @@ async function readResponseBody(res) {
 }
 
 function currentView() {
-  return window.location.pathname.endsWith('/test') ? 'test' : 'offers'
+  if (window.location.pathname.endsWith('/test')) return 'test'
+  if (window.location.pathname.endsWith('/cv')) return 'cv'
+  return 'offers'
 }
 
 function filterOffersByRole(offers, filter) {
@@ -366,12 +536,24 @@ function formatSalary(offer) {
   return ''
 }
 
+function formatEmailPresence(offer) {
+  const count = Array.isArray(offer.emails) ? offer.emails.length : 0
+  if (!count) return 'Aucun email'
+  return `${count} email${count > 1 ? 's' : ''}`
+}
+
 function formatMoney(value, currency) {
   return new Intl.NumberFormat('fr-FR', {
     style: 'currency',
     currency,
     maximumFractionDigits: 0,
   }).format(value)
+}
+
+function formatFileSize(value) {
+  return new Intl.NumberFormat('fr-FR', {
+    maximumFractionDigits: 1,
+  }).format(Number(value || 0) / 1024 / 1024) + ' Mo'
 }
 
 function loginErrorMessage(error) {
