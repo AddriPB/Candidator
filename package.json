@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "server": "node server/index.js",
-    "build": "vite build",
+    "build": "vite build && cp dist/index.html dist/404.html",
     "start": "node server/index.js",
     "radar:daily": "node server/cli/run-daily-radar.js",
     "radar:test": "node server/cli/run-daily-radar.js",
