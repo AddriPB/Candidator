@@ -14,11 +14,12 @@ export function openDatabase() {
     db.pragma('foreign_keys = ON')
     migrate(db)
     importJsonStoreIfSqliteEmpty(db, dbPath)
-    return { kind: 'sqlite', db }
+    return { kind: 'sqlite', db, path: dbPath }
   } catch (error) {
     const jsonPath = dbPath.replace(/\.(sqlite|db)$/i, '.json')
+    const reportFallbackDir = path.resolve(process.env.RADAR_OUTPUT_DIR || './data/radar-runs')
     console.warn(`[storage] better-sqlite3 unavailable, using JSON store at ${jsonPath}: ${error.message}`)
-    return { kind: 'json', path: jsonPath, data: readJsonStore(jsonPath) }
+    return { kind: 'json', path: jsonPath, reportFallbackDir, data: readJsonStore(jsonPath, { reportFallbackDir }) }
   }
 }
 
@@ -757,16 +758,23 @@ function requireBetterSqlite() {
   return require('better-sqlite3')
 }
 
-function readJsonStore(jsonPath) {
+function readJsonStore(jsonPath, { reportFallbackDir = '' } = {}) {
+  let data
   try {
-    return normalizeJsonStore(JSON.parse(fs.readFileSync(jsonPath, 'utf8')))
+    data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'))
   } catch {
-    return normalizeJsonStore({})
+    data = {}
   }
+
+  const store = normalizeJsonStore(data)
+  if (store.radarRuns.length === 0 && reportFallbackDir) {
+    store.radarRuns = readRadarRunReports(reportFallbackDir)
+  }
+  return store
 }
 
 function refreshJsonStore(store) {
-  store.data = readJsonStore(store.path)
+  store.data = readJsonStore(store.path, { reportFallbackDir: store.reportFallbackDir })
 }
 
 function normalizeJsonStore(data) {
@@ -776,6 +784,38 @@ function normalizeJsonStore(data) {
     offerEmails: Array.isArray(data?.offerEmails) ? data.offerEmails : [],
     applicationEmailSends: Array.isArray(data?.applicationEmailSends) ? data.applicationEmailSends : [],
     applicationContacts: Array.isArray(data?.applicationContacts) ? data.applicationContacts : [],
+  }
+}
+
+function readRadarRunReports(reportDir) {
+  try {
+    return fs.readdirSync(reportDir)
+      .filter((fileName) => fileName.endsWith('.json'))
+      .map((fileName) => path.join(reportDir, fileName))
+      .map(readRadarRunReport)
+      .filter(Boolean)
+      .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))
+  } catch {
+    return []
+  }
+}
+
+function readRadarRunReport(filePath) {
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'))
+    if (!data?.startedAt || !Array.isArray(data.offers)) return null
+    return {
+      startedAt: data.startedAt,
+      summary: data.summary || {},
+      logs: Array.isArray(data.logs) ? data.logs : [],
+      offers: data.offers,
+      reports: {
+        jsonPath: filePath,
+        markdownPath: filePath.replace(/\.json$/i, '.md'),
+      },
+    }
+  } catch {
+    return null
   }
 }
 

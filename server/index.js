@@ -80,6 +80,8 @@ app.get('/api/test/healthcheck', requireAuth, (_req, res) => {
       pid: process.pid,
       uptimeSeconds: Math.round(process.uptime()),
       database: db.kind,
+      databasePath: db.path || '',
+      reportFallbackDir: db.reportFallbackDir || '',
       host,
       port,
     },

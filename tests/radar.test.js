@@ -183,6 +183,27 @@ test('stockage JSON: relit les runs écrits par un autre process', () => {
   assert.equal(latest.offers[0].title, 'Product Manager')
 })
 
+test('stockage JSON: recharge les rapports radar quand le fallback JSON est vide', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'radar-reports-'))
+  const reportDir = path.join(dir, 'radar-runs')
+  fs.mkdirSync(reportDir)
+  const jsonPath = path.join(dir, 'store.json')
+  fs.writeFileSync(jsonPath, `${JSON.stringify({ sourceChecks: [], radarRuns: [] }, null, 2)}\n`)
+  fs.writeFileSync(path.join(reportDir, 'opportunity-radar-2026-05-14.json'), `${JSON.stringify({
+    startedAt: '2026-05-14T08:40:23.033Z',
+    summary: {},
+    logs: [],
+    offers: [offer({ id: 'report:1', title: 'Business Analyst' })],
+  }, null, 2)}\n`)
+  const db = { kind: 'json', path: jsonPath, reportFallbackDir: reportDir, data: { sourceChecks: [], radarRuns: [] } }
+
+  const latest = getLatestRadarOffers(db)
+
+  assert.equal(latest.startedAt, '2026-05-14T08:40:23.033Z')
+  assert.equal(latest.offers.length, 1)
+  assert.equal(latest.offers[0].title, 'Business Analyst')
+})
+
 test('stockage JSON: expose les emails des offres publiques', () => {
   const jsonPath = makeJsonStore({
     sourceChecks: [],
