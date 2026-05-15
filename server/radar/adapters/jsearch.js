@@ -1,6 +1,7 @@
 import { normalizeOffer } from '../normalizer.js'
 
 export const source = 'jsearch'
+export const QUOTA_REACHED_CODE = 'quota_reached'
 
 export async function fetchJSearchOffers({ query, collectedAt }) {
   requireEnv(['RAPIDAPI_KEY'])
@@ -19,7 +20,13 @@ export async function fetchJSearchOffers({ query, collectedAt }) {
     },
     signal: AbortSignal.timeout(15000),
   })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  if (!res.ok) {
+    const body = await safeErrorBody(res)
+    const error = new Error(`HTTP ${res.status}${body ? ` - ${body}` : ''}`)
+    error.status = res.status
+    if (isQuotaReachedResponse(res.status, body)) error.code = QUOTA_REACHED_CODE
+    throw error
+  }
   const data = await res.json()
   return (data.data || []).map((item) => normalizeOffer({
     source,
@@ -40,6 +47,28 @@ export async function fetchJSearchOffers({ query, collectedAt }) {
     query,
     raw: item,
   }))
+}
+
+export function isQuotaReachedError(error) {
+  if (!error) return false
+  if (error.code === QUOTA_REACHED_CODE) return true
+  const message = String(error.message || '').toLowerCase()
+  return /\bhttp (429|403)\b/.test(message) && /(quota|rate limit|too many requests|exceeded|limit reached|usage limit)/.test(message)
+}
+
+function isQuotaReachedResponse(status, body) {
+  const text = String(body || '').toLowerCase()
+  if (status === 429) return true
+  return status === 403 && /(quota|exceeded|limit reached|usage limit)/.test(text)
+}
+
+async function safeErrorBody(response) {
+  try {
+    const text = await response.text()
+    return text.replace(/\s+/g, ' ').trim().slice(0, 500)
+  } catch {
+    return ''
+  }
 }
 
 function requireEnv(names) {

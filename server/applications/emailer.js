@@ -15,7 +15,6 @@ import {
 
 const TITLE_PLACEHOLDER = '[Intitulé du poste]'
 const OFFER_URL_PLACEHOLDER = '[URL de l’offre]'
-const TEST_RECIPIENT = 'adri538.mail@gmail.com'
 
 export async function sendDailyApplicationEmails({
   db,
@@ -55,6 +54,15 @@ export async function sendDailyApplicationEmails({
     summary.skipped = source.offers.length
     summary.results = source.offers.map((offer) => ({ ...result, offerId: offer.id, offerTitle: offer.title }))
     logger.warn(`[applications] envoi ignore: ${sendWindow.reason}`)
+    return summary
+  }
+
+  const delivery = applicationDeliveryCheck(env)
+  if (!delivery.allowed) {
+    const result = { status: 'skipped', reason: delivery.reason }
+    summary.skipped = source.offers.length
+    summary.results = source.offers.map((offer) => ({ ...result, offerId: offer.id, offerTitle: offer.title }))
+    logger.warn(`[applications] envoi ignore: ${delivery.reason}`)
     return summary
   }
 
@@ -304,9 +312,16 @@ function applicationOfferUrl(offer) {
 
 export function applicationRecipient(originalRecipients, env) {
   const mode = String(env.APPLICATION_EMAIL_DELIVERY_MODE || 'test').toLowerCase()
-  const redirectTo = String(env.APPLICATION_EMAIL_REDIRECT_TO || TEST_RECIPIENT).trim()
+  const redirectTo = String(env.APPLICATION_EMAIL_REDIRECT_TO || '').trim()
   if (mode !== 'live') return redirectTo
   return originalRecipients.length === 1 ? originalRecipients[0] : originalRecipients
+}
+
+export function applicationDeliveryCheck(env = process.env) {
+  const mode = String(env.APPLICATION_EMAIL_DELIVERY_MODE || 'test').toLowerCase()
+  const redirectTo = String(env.APPLICATION_EMAIL_REDIRECT_TO || '').trim()
+  if (mode === 'live' || redirectTo) return { allowed: true, reason: '' }
+  return { allowed: false, reason: 'test_redirect_missing' }
 }
 
 function normalizedEmails(emails) {

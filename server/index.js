@@ -7,7 +7,8 @@ import { getAuthDiagnostics, loginHandler, logoutHandler, meHandler, requireAuth
 import { checkSources } from './connectors/sourceChecks.js'
 import { cvDownloadPath, getCvState, saveApplicationMailTemplate, saveCvUpload, setActiveCv } from './cv/storage.js'
 import { assertSmtpConfig } from './email/smtp.js'
-import { getApplicationEmailEligibleOffers, getLatestRadarOffers, getLatestSourceChecks, getOfferEmailStats, openDatabase, pruneOldData, saveSourceCheckLogs } from './storage/database.js'
+import { getApplicationEmailEligibleOffers, getApplicationEmailSends, getLatestApplicationCandidateOffers, getLatestSourceChecks, getOfferEmailStats, openDatabase, pruneOldData, saveSourceCheckLogs } from './storage/database.js'
+import { stableHash } from './radar/hash.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(__dirname, '..')
@@ -63,7 +64,7 @@ app.get('/api/source-checks/latest', requireAuth, (_req, res) => {
 })
 
 app.get('/api/offers', requireAuth, (_req, res) => {
-  res.json(getLatestRadarOffers(db))
+  res.json(getOffersScreenState(db))
 })
 
 app.get('/api/test/healthcheck', requireAuth, (_req, res) => {
@@ -97,7 +98,7 @@ app.get('/api/test/healthcheck', requireAuth, (_req, res) => {
     applications: {
       dailyEnabled: process.env.APPLICATION_EMAIL_DAILY_ENABLED !== 'false',
       deliveryMode: process.env.APPLICATION_EMAIL_DELIVERY_MODE || 'test',
-      redirectTo: process.env.APPLICATION_EMAIL_REDIRECT_TO || 'adri538.mail@gmail.com',
+      redirectTo: process.env.APPLICATION_EMAIL_REDIRECT_TO || '',
       blockMonths: Number(process.env.APPLICATION_EMAIL_BLOCK_MONTHS || 12),
       offerMaxMonths: Number(process.env.APPLICATION_EMAIL_OFFER_MAX_MONTHS || 12),
       offersRecent: stats.offersRecent,
@@ -228,6 +229,63 @@ function logSourceCheckRequest(req, res, next) {
     }))
   })
   next()
+}
+
+function getOffersScreenState(db) {
+  const source = getLatestApplicationCandidateOffers(db)
+  const sendsByOfferKey = applicationSendsByOfferKey(getApplicationEmailSends(db))
+  const offers = source.offers.map((offer) => {
+    const offerKey = applicationOfferKey(offer)
+    const latestSend = sendsByOfferKey.get(offerKey)
+    return {
+      ...offer,
+      offerKey,
+      applicationStatus: latestSend ? 'candidatée' : 'à candidater',
+      applicationLastSentAt: latestSend?.sentAt || '',
+      applicationEmailStatus: latestSend?.status || '',
+    }
+  })
+
+  return {
+    startedAt: source.startedAt || null,
+    since: source.since || null,
+    offers,
+  }
+}
+
+function applicationSendsByOfferKey(sends) {
+  const acceptedStatuses = new Set(['sent', 'sent_pending_delivery', 'delivered_or_no_bounce_after_grace_period'])
+  const rows = sends
+    .filter((row) => row.actionType !== 'spontaneous_application')
+    .filter((row) => acceptedStatuses.has(row.status))
+    .sort((a, b) => String(b.sentAt).localeCompare(String(a.sentAt)))
+  const result = new Map()
+  for (const row of rows) {
+    if (row.offerKey && !result.has(row.offerKey)) result.set(row.offerKey, row)
+  }
+  return result
+}
+
+function applicationOfferKey(offer) {
+  if (offer.link) return `link:${normalizeUrl(offer.link)}`
+  if (offer.id) return `id:${offer.id}`
+  return `hash:${stableHash([
+    offer.title,
+    offer.company,
+    offer.location,
+    offer.source,
+    String(offer.description || '').slice(0, 180),
+  ].join('|'))}`
+}
+
+function normalizeUrl(url) {
+  try {
+    const parsed = new URL(url)
+    parsed.hash = ''
+    return parsed.toString().replace(/\/$/, '')
+  } catch {
+    return String(url || '').trim().toLowerCase()
+  }
 }
 
 const host = process.env.HOST || '127.0.0.1'

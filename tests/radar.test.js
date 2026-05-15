@@ -4,17 +4,19 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { dedupeOffers } from '../server/radar/dedupe.js'
+import { collectOffers, hasQuotaReachedLog } from '../server/radar/collector.js'
 import { evaluateOffer } from '../server/radar/filter.js'
 import { normalizeOffer } from '../server/radar/normalizer.js'
 import { scoreOffer } from '../server/radar/scorer.js'
 import { loginHandler, requireAuth } from '../server/auth/index.js'
 import { buildApplicationMessage, sendDailyApplicationEmails } from '../server/applications/emailer.js'
 import { buildSpontaneousApplicationMessage, sendDailySpontaneousApplications } from '../server/applications/spontaneous.js'
-import { discoverContactsForOffer, extractMailtoEmails, inferRecruiterLocals } from '../server/applications/contactDiscovery.js'
+import { buildEsnDiscoveryOffers, buildWebDiscoveryOffers, discoverContactsForOffer, discoverEsnRecruiterContacts, discoverWebRecruiterContacts, extractMailtoEmails, inferRecruiterLocals } from '../server/applications/contactDiscovery.js'
 import { processApplicationBounces } from '../server/applications/bounces.js'
 import { cvPseudo, getCvState, saveApplicationMailTemplate, saveCvUpload, setActiveCv } from '../server/cv/storage.js'
-import { getApplicationContacts, getApplicationEmailEligibleOffers, getLatestRadarOffers, saveRadarRun, saveSourceCheckLogs } from '../server/storage/database.js'
+import { getAllApplicationContacts, getApplicationContacts, getApplicationEmailEligibleOffers, getLatestRadarOffers, openDatabase, saveRadarRun, saveSourceCheckLogs } from '../server/storage/database.js'
 import { nightlyRunSucceeded, recordNightlyAttempt, shouldRunNightlyRadar } from '../server/radar/nightlySchedule.js'
+import { isQuotaReachedError, QUOTA_REACHED_CODE } from '../server/radar/adapters/jsearch.js'
 
 const baseConfig = {
   contrat: 'CDI',
@@ -298,6 +300,45 @@ test('stockage JSON: liste les offres avec email publiees depuis moins de 12 moi
   assert.deepEqual(result.offers.map((item) => item.id).sort(), ['recent-apply', 'recent-watch'])
 })
 
+test('stockage SQLite: importe le store JSON existant au premier demarrage', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-sqlite-'))
+  const previousDatabasePath = process.env.DATABASE_PATH
+  const sqlitePath = path.join(dir, 'store.sqlite')
+  const jsonPath = path.join(dir, 'store.json')
+  fs.writeFileSync(jsonPath, `${JSON.stringify({
+    sourceChecks: [],
+    radarRuns: [],
+    offerEmails: [],
+    applicationEmailSends: [],
+    applicationContacts: [{
+      offerKey: 'id:web:recruteurs-idf-esn',
+      email: 'rh@example-esn.fr',
+      method: 'web_public_page',
+      sourceUrl: 'https://example-esn.fr/contact',
+      confidence: 90,
+      status: 'candidate',
+      lastAttemptAt: '',
+      bounceReason: '',
+      attempts: 0,
+      updatedAt: '2026-05-15T08:00:00.000Z',
+    }],
+  }, null, 2)}\n`)
+
+  try {
+    process.env.DATABASE_PATH = sqlitePath
+    const db = openDatabase()
+    assert.equal(db.kind, 'sqlite')
+    const contacts = getAllApplicationContacts(db)
+    assert.equal(contacts.length, 1)
+    assert.equal(contacts[0].email, 'rh@example-esn.fr')
+    db.db.close()
+  } finally {
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH
+    else process.env.DATABASE_PATH = previousDatabasePath
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('planification nocturne: autorise le premier appel pendant la nuit', () => {
   const decision = shouldRunNightlyRadar({
     schedule: nightlySchedule(),
@@ -348,6 +389,31 @@ test('planification nocturne: ne retente pas après 3 échecs le même jour', ()
   assert.match(decision.reason, /daily failure cap/)
 })
 
+test('planification nocturne: ne retente pas le meme jour apres quota atteint', () => {
+  const state = recordNightlyAttempt({
+    state: {},
+    date: '2026-05-14',
+    startedAt: '2026-05-14T00:15:00.000Z',
+    status: 'quota_reached',
+    detail: 'jsearch: HTTP 429 - quota reached',
+  })
+
+  const sameDay = shouldRunNightlyRadar({
+    schedule: nightlySchedule(),
+    state,
+    now: new Date('2026-05-14T02:15:00.000Z'),
+  })
+  const nextDay = shouldRunNightlyRadar({
+    schedule: nightlySchedule(),
+    state,
+    now: new Date('2026-05-15T00:15:00.000Z'),
+  })
+
+  assert.equal(sameDay.run, false)
+  assert.match(sameDay.reason, /quota reached/)
+  assert.equal(nextDay.run, true)
+})
+
 test('planification nocturne: un succès bloque les créneaux suivants', () => {
   const state = recordNightlyAttempt({
     state: {},
@@ -370,6 +436,47 @@ test('planification nocturne: un succès bloque les créneaux suivants', () => {
 test('planification nocturne: une erreur source rend le run incomplet', () => {
   assert.equal(nightlyRunSucceeded({ logs: [{ source: 'adzuna', errorsCount: 0 }] }), true)
   assert.equal(nightlyRunSucceeded({ logs: [{ source: 'adzuna', errorsCount: 1 }] }), false)
+})
+
+test('collecte: arrete JSearch au premier code quota atteint', async () => {
+  const originalFetch = globalThis.fetch
+  const originalKey = process.env.RAPIDAPI_KEY
+  let calls = 0
+  process.env.RAPIDAPI_KEY = 'test-key'
+  globalThis.fetch = async () => {
+    calls += 1
+    return {
+      ok: false,
+      status: 429,
+      text: async () => '{"message":"You have exceeded the quota"}',
+    }
+  }
+
+  try {
+    const result = await collectOffers({ sources_actives: ['jsearch'] }, {
+      collectedAt: '2026-05-14T00:15:00.000Z',
+      logger: silentLogger(),
+    })
+
+    assert.equal(calls, 1)
+    assert.equal(result.logs[0].errorsCount, 1)
+    assert.equal(result.logs[0].stoppedReason, 'quota_reached')
+    assert.equal(hasQuotaReachedLog(result.logs), true)
+  } finally {
+    globalThis.fetch = originalFetch
+    if (originalKey === undefined) delete process.env.RAPIDAPI_KEY
+    else process.env.RAPIDAPI_KEY = originalKey
+  }
+})
+
+test('jsearch: detecte explicitement les erreurs de quota', () => {
+  const explicit = new Error('HTTP 403 - usage limit exceeded')
+  const coded = new Error('API Hub quota')
+  coded.code = QUOTA_REACHED_CODE
+
+  assert.equal(isQuotaReachedError(explicit), true)
+  assert.equal(isQuotaReachedError(coded), true)
+  assert.equal(isQuotaReachedError(new Error('HTTP 500')), false)
 })
 
 test('auth: accepte le token de session via Authorization Bearer', () => {
@@ -539,7 +646,7 @@ test('candidatures: envoie un mail par annonce recente meme avec la meme boite m
     const summary = await sendDailyApplicationEmails({
       db,
       now: new Date('2026-05-14T08:00:00.000Z'),
-      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'test', APPLICATION_EMAIL_REDIRECT_TO: 'adri538.mail@gmail.com' },
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'test', APPLICATION_EMAIL_REDIRECT_TO: 'test-capture@example.fr' },
       mailer: async (message) => {
         sent.push(message)
         return { messageId: `message-${sent.length}` }
@@ -554,7 +661,7 @@ test('candidatures: envoie un mail par annonce recente meme avec la meme boite m
 
     assert.equal(summary.sent, 2)
     assert.equal(sent.length, 2)
-    assert.deepEqual(sent.map((message) => message.to), ['adri538.mail@gmail.com', 'adri538.mail@gmail.com'])
+    assert.deepEqual(sent.map((message) => message.to), ['test-capture@example.fr', 'test-capture@example.fr'])
     assert.deepEqual(sent.map((message) => message.subject), [
       'Candidature : Product Owner',
       'Candidature : Product Manager',
@@ -583,7 +690,7 @@ test('candidatures: bloque un nouvel envoi sur la meme annonce pendant 12 mois',
     const options = {
       db,
       now: new Date('2026-05-14T08:00:00.000Z'),
-      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'test', APPLICATION_EMAIL_REDIRECT_TO: 'adri538.mail@gmail.com' },
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'test', APPLICATION_EMAIL_REDIRECT_TO: 'test-capture@example.fr' },
       mailer: async (message) => {
         sent.push(message)
         return { messageId: `message-${sent.length}` }
@@ -602,6 +709,44 @@ test('candidatures: bloque un nouvel envoi sur la meme annonce pendant 12 mois',
     assert.equal(second.sent, 0)
     assert.equal(second.skipped, 1)
     assert.equal(sent.length, 1)
+  })
+})
+
+test('candidatures: bloque le mode test sans redirection explicite', async () => {
+  await withCvEnv(async () => {
+    saveCvUpload({
+      originalName: 'CV Produit.pdf',
+      buffer: Buffer.from('%PDF-1.4 test'),
+    })
+    saveApplicationMailTemplate({
+      firstName: 'Adrien',
+      lastName: 'Pujol',
+      phone: '06 00 00 00 00',
+      subjectTemplate: 'Candidature : [Intitulé du poste]',
+      bodyTemplate: 'Bonjour [Intitulé du poste]',
+    })
+
+    const db = jsonDb({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [], applicationContacts: [] })
+    const sent = []
+    const summary = await sendDailyApplicationEmails({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'test' },
+      mailer: async (message) => {
+        sent.push(message)
+        return { messageId: 'message-1' }
+      },
+      logger: silentLogger(),
+      offers: [
+        offer({ id: 'offer:test-mode', title: 'Product Owner', verdict: 'à candidater', emails: ['rh@example.fr'] }),
+      ],
+      startedAt: '2026-05-14T07:55:00.000Z',
+    })
+
+    assert.equal(summary.sent, 0)
+    assert.equal(summary.skipped, 1)
+    assert.equal(sent.length, 0)
+    assert.equal(summary.results[0].reason, 'test_redirect_missing')
   })
 })
 
@@ -711,6 +856,100 @@ test('contacts recruteurs: infere des adresses depuis un recruteur public', () =
 
   assert.ok(locals.includes('laura.letreguilly'))
   assert.ok(locals.includes('l.letreguilly'))
+})
+
+test('contacts ESN: decouvre RH et commerciaux depuis les entreprises configurees', async () => {
+  const config = {
+    esn_contact_discovery: {
+      enabled: true,
+      max_pages_per_company: 2,
+      companies: [{ name: 'Acme ESN', domain: 'acme-esn.fr', url: 'https://acme-esn.fr/' }],
+    },
+  }
+  const fetched = []
+  const contacts = await discoverEsnRecruiterContacts(config, {
+    fetcher: async (url) => {
+      fetched.push(url)
+      return {
+        ok: true,
+        headers: new Map([['content-type', 'text/html']]),
+        text: async () => '<a href="mailto:talent@acme-esn.fr">RH</a><a href="mailto:business@acme-esn.fr">Business</a>',
+      }
+    },
+  })
+
+  assert.equal(buildEsnDiscoveryOffers(config.esn_contact_discovery).length, 1)
+  assert.equal(fetched.length, 2)
+  assert.ok(contacts.some((item) => item.offerKey === 'id:esn:acme-esn' && item.email === 'talent@acme-esn.fr'))
+  assert.ok(contacts.some((item) => item.email === 'business@acme-esn.fr'))
+  assert.ok(contacts.some((item) => item.email === 'commercial@acme-esn.fr'))
+})
+
+test('contacts web: extrait les emails trouvables via une recherche publique', async () => {
+  const config = {
+    web_contact_discovery: {
+      enabled: true,
+      max_results_per_query: 3,
+      max_pages_per_query: 1,
+      queries: [{ label: 'Recruteurs IDF ESN', query: 'recruteur IDF ESN email recrutement' }],
+    },
+  }
+  const fetched = []
+  const contacts = await discoverWebRecruiterContacts(config, {
+    fetcher: async (url) => {
+      fetched.push(url)
+      if (String(url).includes('duckduckgo')) {
+        return {
+          ok: true,
+          headers: new Map([['content-type', 'text/html']]),
+          text: async () => `
+            contact visible: rh-public@example-esn.fr
+            <a class="result__a" href="/l/?uddg=${encodeURIComponent('https://cabinet.example-esn.fr/recruteur-idf')}">Result</a>
+            <a class="result__a" href="/l/?uddg=${encodeURIComponent('https://www.linkedin.com/company/example')}">Ignored</a>
+          `,
+        }
+      }
+      return {
+        ok: true,
+        headers: new Map([['content-type', 'text/html']]),
+        text: async () => '<h1>Cabinet de conseil IT ESN en Ile-de-France</h1><a href="mailto:recruteur.idf@example-esn.fr">Recruteur IDF</a>',
+      }
+    },
+  })
+
+  assert.equal(buildWebDiscoveryOffers(config.web_contact_discovery).length, 1)
+  assert.equal(fetched.length, 2)
+  assert.ok(contacts.some((item) => item.offerKey === 'id:web:recruteurs-idf-esn' && item.email === 'rh-public@example-esn.fr'))
+  assert.ok(contacts.some((item) => item.email === 'recruteur.idf@example-esn.fr'))
+  assert.equal(contacts.some((item) => item.sourceUrl.includes('linkedin.com')), false)
+})
+
+test('contacts web: ignore les pages sans signal ESN IDF', async () => {
+  const contacts = await discoverWebRecruiterContacts({
+    web_contact_discovery: {
+      enabled: true,
+      max_results_per_query: 1,
+      max_pages_per_query: 1,
+      queries: [{ label: 'Recruteurs IDF ESN', query: 'recruteur IDF ESN email recrutement' }],
+    },
+  }, {
+    fetcher: async (url) => {
+      if (String(url).includes('duckduckgo')) {
+        return {
+          ok: true,
+          headers: new Map([['content-type', 'text/html']]),
+          text: async () => `<a href="/l/?uddg=${encodeURIComponent('https://hors-cible.example.fr/contact')}">Result</a>`,
+        }
+      }
+      return {
+        ok: true,
+        headers: new Map([['content-type', 'text/html']]),
+        text: async () => '<a href="mailto:contact@hors-cible.example.fr">Contact</a><p>Agence marketing à Lyon.</p>',
+      }
+    },
+  })
+
+  assert.equal(contacts.some((item) => item.email === 'contact@hors-cible.example.fr'), false)
 })
 
 test('candidatures: tente une autre adresse apres rejet SMTP 5xx immediat', async () => {
@@ -870,6 +1109,31 @@ test('candidatures spontanees: bloque les envois hors fenetre 08h-21h59 Paris', 
   })
 })
 
+test('candidatures spontanees: bloque le mode test sans redirection explicite', async () => {
+  await withCvEnv(async () => {
+    setupCvForSpontaneous()
+    const db = jsonDb({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [], applicationContacts: [] })
+    const sent = []
+
+    const summary = await sendDailySpontaneousApplications({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'test' },
+      mailer: async (message) => {
+        sent.push(message)
+        return { messageId: 'message-1' }
+      },
+      logger: silentLogger(),
+      offers: [offer({ id: 'spontaneous:test-mode', company: 'Acme', emails: ['rh@acme.fr'] })],
+    })
+
+    assert.equal(summary.sent, 0)
+    assert.equal(summary.skipped, 1)
+    assert.equal(sent.length, 0)
+    assert.equal(summary.results[0].skipReason, 'test_redirect_missing')
+  })
+})
+
 test('candidatures spontanees: stop apres un succes et logge le type', async () => {
   await withCvEnv(async () => {
     setupCvForSpontaneous()
@@ -897,6 +1161,90 @@ test('candidatures spontanees: stop apres un succes et logge le type', async () 
     assert.equal(summary.results[0].dailyStopReason, 'stop_after_1_success')
     assert.equal(summary.results[0].company, 'Acme')
     assert.equal(summary.results[0].contactEmail, 'rh@acme.fr')
+  })
+})
+
+test('candidatures spontanees: utilise les contacts ESN globaux', async () => {
+  await withCvEnv(async () => {
+    setupCvForSpontaneous()
+    const db = jsonDb({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [], applicationContacts: [] })
+    const sent = []
+
+    const summary = await sendDailySpontaneousApplications({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'live' },
+      config: {
+        esn_contact_discovery: {
+          enabled: true,
+          max_pages_per_company: 1,
+          companies: [{ name: 'Acme ESN', domain: 'acme-esn.fr', url: 'https://acme-esn.fr/' }],
+        },
+      },
+      contactFetcher: async () => ({
+        ok: true,
+        headers: new Map([['content-type', 'text/html']]),
+        text: async () => '<a href="mailto:talent@acme-esn.fr">RH</a>',
+      }),
+      mailer: async (message) => {
+        sent.push(message)
+        return { messageId: 'message-1' }
+      },
+      logger: silentLogger(),
+      offers: [],
+    })
+
+    assert.equal(summary.sent, 1)
+    assert.equal(sent[0].to, 'talent@acme-esn.fr')
+    assert.equal(summary.results[0].company, 'Acme ESN')
+    assert.equal(summary.results[0].offerKey, 'id:esn:acme-esn')
+  })
+})
+
+test('candidatures spontanees: utilise les contacts web globaux', async () => {
+  await withCvEnv(async () => {
+    setupCvForSpontaneous()
+    const db = jsonDb({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [], applicationContacts: [] })
+    const sent = []
+
+    const summary = await sendDailySpontaneousApplications({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: { APPLICATION_EMAIL_DELIVERY_MODE: 'live' },
+      config: {
+        web_contact_discovery: {
+          enabled: true,
+          max_results_per_query: 1,
+          max_pages_per_query: 1,
+          queries: [{ label: 'Recruteurs IDF ESN', query: 'recruteur IDF ESN email recrutement' }],
+        },
+      },
+      contactFetcher: async (url) => {
+        if (String(url).includes('duckduckgo')) {
+          return {
+            ok: true,
+            headers: new Map([['content-type', 'text/html']]),
+            text: async () => `<a href="/l/?uddg=${encodeURIComponent('https://example-esn.fr/recruteur-idf')}">Result</a>`,
+          }
+        }
+        return {
+          ok: true,
+          headers: new Map([['content-type', 'text/html']]),
+          text: async () => '<h1>ESN en Ile-de-France</h1><p>Recrutement Product Owner et Business Analyst.</p><a href="mailto:recruteur.idf@example-esn.fr">Contact</a>',
+        }
+      },
+      mailer: async (message) => {
+        sent.push(message)
+        return { messageId: 'message-1' }
+      },
+      logger: silentLogger(),
+      offers: [],
+    })
+
+    assert.equal(summary.sent, 1)
+    assert.equal(sent[0].to, 'recruteur.idf@example-esn.fr')
+    assert.equal(summary.results[0].company, 'Recruteurs IDF ESN')
+    assert.equal(summary.results[0].offerKey, 'id:web:recruteurs-idf-esn')
   })
 })
 

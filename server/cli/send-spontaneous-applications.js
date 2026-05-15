@@ -1,11 +1,13 @@
 import 'dotenv/config'
 import { sendDailySpontaneousApplications } from '../applications/spontaneous.js'
+import { loadRadarConfig } from '../radar/config.js'
 import { openDatabase } from '../storage/database.js'
 
 const db = openDatabase()
 
 try {
-  const summary = await sendDailySpontaneousApplications({ db })
+  const config = loadRadarConfig()
+  const summary = await sendDailySpontaneousApplications({ db, config })
   console.log(`[spontaneous_application] candidates: ${summary.candidates}`)
   console.log(`[spontaneous_application] sent: ${summary.sent}`)
   console.log(`[spontaneous_application] skipped: ${summary.skipped}`)

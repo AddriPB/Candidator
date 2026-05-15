@@ -13,6 +13,7 @@ export function openDatabase() {
     db.pragma('journal_mode = WAL')
     db.pragma('foreign_keys = ON')
     migrate(db)
+    importJsonStoreIfSqliteEmpty(db, dbPath)
     return { kind: 'sqlite', db }
   } catch (error) {
     const jsonPath = dbPath.replace(/\.(sqlite|db)$/i, '.json')
@@ -648,6 +649,108 @@ function migrate(db) {
 function ensureColumn(db, table, column, definition) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((item) => item.name)
   if (!columns.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+}
+
+function importJsonStoreIfSqliteEmpty(db, dbPath) {
+  const jsonPath = dbPath.replace(/\.(sqlite|db)$/i, '.json')
+  if (!fs.existsSync(jsonPath)) return
+  if (!sqliteStoreIsEmpty(db)) return
+
+  const data = readJsonStore(jsonPath)
+  const insertSourceCheck = db.prepare(`
+    INSERT INTO source_checks (checked_at, source, status, detail, offers_count, errors_count)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
+  const insertRadarRun = db.prepare(`
+    INSERT INTO radar_runs (started_at, summary_json, logs_json, offers_json, markdown_path, json_path)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
+  const insertOfferEmail = db.prepare(`
+    INSERT INTO offer_emails (run_started_at, offer_id, source, verdict, email)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+  const insertSend = db.prepare(`
+    INSERT INTO application_email_sends (
+      sent_at, action_type, offer_key, offer_id, offer_title, company, contact_name, original_to, sent_to, subject, message_id, attempt_id, contact_email, attempt_of_day, skip_reason, daily_stop_reason, status, error
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const insertContact = db.prepare(`
+    INSERT OR IGNORE INTO application_contacts (
+      offer_key, email, method, source_url, confidence, status, last_attempt_at, bounce_reason, attempts, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+
+  const trx = db.transaction(() => {
+    for (const row of data.sourceChecks) {
+      insertSourceCheck.run(
+        row.checkedAt || '',
+        row.source || '',
+        row.status || '',
+        row.detail || '',
+        Number(row.offersCount || 0),
+        Number(row.errorsCount || 0),
+      )
+    }
+    for (const row of data.radarRuns) {
+      insertRadarRun.run(
+        row.startedAt || '',
+        JSON.stringify(row.summary || {}),
+        JSON.stringify(row.logs || []),
+        JSON.stringify(row.offers || []),
+        row.reports?.markdownPath || '',
+        row.reports?.jsonPath || '',
+      )
+    }
+    for (const row of data.offerEmails) {
+      insertOfferEmail.run(row.runStartedAt || '', row.offerId || '', row.source || '', row.verdict || '', normalizeEmail(row.email))
+    }
+    for (const row of data.applicationEmailSends) {
+      const normalized = normalizeApplicationEmailSend(row)
+      insertSend.run(
+        normalized.sentAt || '',
+        normalized.actionType || 'job_offer_application',
+        normalized.offerKey || '',
+        normalized.offerId || '',
+        normalized.offerTitle || '',
+        normalized.company || '',
+        normalized.contactName || '',
+        normalized.originalTo || '',
+        normalized.sentTo || '',
+        normalized.subject || '',
+        normalized.messageId || '',
+        normalized.attemptId || '',
+        normalized.contactEmail || '',
+        Number(normalized.attemptOfDay || 0),
+        normalized.skipReason || '',
+        normalized.dailyStopReason || '',
+        normalized.status || '',
+        normalized.error || '',
+      )
+    }
+    for (const row of data.applicationContacts) {
+      const email = normalizeEmail(row.email)
+      if (!email || !row.offerKey) continue
+      insertContact.run(
+        row.offerKey,
+        email,
+        row.method || 'unknown',
+        row.sourceUrl || row.source_url || '',
+        Number(row.confidence || 0),
+        row.status || 'candidate',
+        row.lastAttemptAt || row.last_attempt_at || '',
+        row.bounceReason || row.bounce_reason || '',
+        Number(row.attempts || 0),
+        row.updatedAt || row.updated_at || '',
+      )
+    }
+  })
+  trx()
+  console.log(`[storage] imported JSON store into SQLite from ${jsonPath}`)
+}
+
+function sqliteStoreIsEmpty(db) {
+  const tables = ['source_checks', 'radar_runs', 'offer_emails', 'application_email_sends', 'application_contacts']
+  return tables.every((table) => Number(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count || 0) === 0)
 }
 
 function requireBetterSqlite() {

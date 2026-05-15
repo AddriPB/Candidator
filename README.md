@@ -66,6 +66,10 @@ Copier `.env.example` vers `.env` sur le Pi et renseigner les valeurs privées :
 - `APPLICATION_EMAIL_MAX_CONTACTS_PER_OFFER` : 3 par défaut
 - `APPLICATION_EMAIL_PER_OFFER_DAILY_LIMIT` : 1 par défaut
 - `APPLICATION_EMAIL_DAILY_LIMIT` : 20 par défaut
+- `APPLICATION_EMAIL_DELIVERY_MODE` : `test` par défaut. En mode `test`,
+  aucun mail ne part sans `APPLICATION_EMAIL_REDIRECT_TO` explicite.
+- `APPLICATION_EMAIL_REDIRECT_TO` : destinataire de redirection uniquement pour
+  les tests d'envoi.
 - `APPLICATION_EMAIL_SEND_TIMEZONE` : `Europe/Paris` par défaut
 - `APPLICATION_EMAIL_SEND_START_HOUR` : 8 par défaut
 - `APPLICATION_EMAIL_SEND_END_HOUR` : 21 par défaut
@@ -114,6 +118,20 @@ candidature, les pages publiques de recrutement, puis par adresses génériques
 du domaine entreprise. Si un recruteur public est identifié, des variantes
 professionnelles peuvent être inférées lorsque `APPLICATION_EMAIL_INFERRED_ENABLED`
 est actif.
+
+La découverte peut aussi être élargie aux ESN listées dans
+`esn_contact_discovery.companies`. Dans ce cas, le collecteur visite quelques
+pages publiques des sites configurés et crée des contacts RH ainsi que
+commerciaux probables (`recrutement@`, `rh@`, `business@`, `commercial@`,
+`sales@`, etc.) sur le domaine de l'entreprise. Cette source est utilisée par
+`npm run applications:discover-contacts` et par les candidatures spontanées.
+
+Une découverte web complémentaire est configurable via
+`web_contact_discovery.queries`. Elle lance des recherches publiques, par
+exemple `recruteur IDF ESN email recrutement`, récupère des liens de résultats,
+puis extrait uniquement les emails visibles sur la page de résultats ou sur les
+pages publiques visitées. Les domaines de job boards et moteurs de recherche
+sont ignorés pour éviter de stocker des emails de plateformes.
 
 Deux types d'action sont journalisés :
 

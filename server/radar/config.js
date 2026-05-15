@@ -27,6 +27,8 @@ export function normalizeConfig(config) {
     keep_unknown_salary: config.keep_unknown_salary !== false,
     daily_run_enabled: config.daily_run_enabled !== false,
     daily_run_schedule: normalizeDailyRunSchedule(config.daily_run_schedule),
+    esn_contact_discovery: normalizeEsnContactDiscovery(config.esn_contact_discovery),
+    web_contact_discovery: normalizeWebContactDiscovery(config.web_contact_discovery),
   }
 }
 
@@ -43,6 +45,47 @@ export function normalizeDailyRunSchedule(schedule = {}) {
     retry_interval_hours: positiveNumber(schedule.retry_interval_hours, 2),
     max_failures_per_day: positiveInteger(schedule.max_failures_per_day, 3),
     state_path: schedule.state_path || './data/radar-nightly-state.json',
+  }
+}
+
+export function normalizeEsnContactDiscovery(discovery = {}) {
+  return {
+    enabled: discovery?.enabled === true,
+    max_pages_per_company: positiveInteger(discovery?.max_pages_per_company, 6),
+    companies: Array.isArray(discovery?.companies)
+      ? discovery.companies
+        .map((company) => {
+          if (typeof company === 'string') return { name: company, domain: company }
+          return {
+            name: String(company?.name || company?.domain || company?.url || '').trim(),
+            domain: String(company?.domain || '').trim(),
+            url: String(company?.url || '').trim(),
+            paths: Array.isArray(company?.paths) ? company.paths : undefined,
+          }
+        })
+        .filter((company) => company.name && (company.domain || company.url))
+      : [],
+  }
+}
+
+export function normalizeWebContactDiscovery(discovery = {}) {
+  return {
+    enabled: discovery?.enabled === true,
+    search_url_template: String(discovery?.search_url_template || 'https://html.duckduckgo.com/html/?q={query}'),
+    max_results_per_query: positiveInteger(discovery?.max_results_per_query, 5),
+    max_pages_per_query: positiveInteger(discovery?.max_pages_per_query, 3),
+    queries: Array.isArray(discovery?.queries)
+      ? discovery.queries
+        .map((query) => {
+          if (typeof query === 'string') return { label: query, query }
+          const text = String(query?.query || query?.text || '').trim()
+          return {
+            label: String(query?.label || query?.company || text || '').trim(),
+            query: text,
+          }
+        })
+        .filter((query) => query.label && query.query)
+      : [],
   }
 }
 

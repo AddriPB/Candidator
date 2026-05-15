@@ -2,7 +2,7 @@ import 'dotenv/config'
 import { sendEmail } from '../email/smtp.js'
 
 const args = parseArgs(process.argv.slice(2))
-const to = args.to || process.env.TEST_EMAIL_TO || 'adri538.mail@gmail.com'
+const to = String(args.to || process.env.TEST_EMAIL_TO || '').trim()
 const subject = args.subject || 'Opportunity Radar - test SMTP'
 const text = args.text || [
   'Message test Opportunity Radar.',
@@ -11,6 +11,7 @@ const text = args.text || [
 ].join('\n')
 
 try {
+  if (!to) throw new Error('Destinataire manquant. Utiliser --to ou TEST_EMAIL_TO.')
   const result = await sendEmail({ to, subject, text })
   console.log(`[email:test] message envoye a ${to}`)
   console.log(`[email:test] messageId: ${result.messageId || 'non fourni'}`)

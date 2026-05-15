@@ -31,6 +31,10 @@ export function shouldRunNightlyRadar({ schedule, state = {}, now = new Date() }
     return { run: false, date: local.date, reason: 'already succeeded today' }
   }
 
+  if (dayState.status === 'quota_reached') {
+    return { run: false, date: local.date, reason: 'quota reached; next attempt tomorrow' }
+  }
+
   if (failures >= schedule.max_failures_per_day) {
     return { run: false, date: local.date, reason: `daily failure cap reached (${failures})` }
   }
@@ -53,7 +57,7 @@ export function recordNightlyAttempt({ state = {}, date, startedAt, status, deta
   const attempts = Array.isArray(current.attempts) ? [...current.attempts] : []
   attempts.push({ startedAt, status, detail })
   next[date] = {
-    status: status === 'success' ? 'success' : 'failed',
+    status: status === 'success' || status === 'quota_reached' ? status : 'failed',
     attempts,
   }
   return pruneOldDays(next, date)

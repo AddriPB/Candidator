@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import { sendDailyApplicationEmails } from '../applications/emailer.js'
+import { hasQuotaReachedLog } from '../radar/collector.js'
 import { loadRadarConfig } from '../radar/config.js'
 import { nightlyRunSucceeded, readNightlyState, recordNightlyAttempt, shouldRunNightlyRadar, writeNightlyState } from '../radar/nightlySchedule.js'
 import { runDailyRadar } from '../radar/pipeline.js'
@@ -37,17 +38,20 @@ try {
     console.log(`[applications] failed: ${emailSummary.failed}`)
   }
 
+  const quotaReached = hasQuotaReachedLog(result.logs)
   const success = nightlyRunSucceeded(result)
   writeNightlyState(schedule.state_path, recordNightlyAttempt({
     state,
     date: decision.date,
     startedAt,
-    status: success ? 'success' : 'failed',
+    status: success ? 'success' : quotaReached ? 'quota_reached' : 'failed',
     detail: success ? 'ok' : failedSourcesDetail(result.logs),
   }))
 
   if (!success) {
-    console.error('[radar] nightly run incomplete; a retry will be allowed later if the daily cap is not reached')
+    console.error(quotaReached
+      ? '[radar] nightly run incomplete; quota reached, next attempt tomorrow'
+      : '[radar] nightly run incomplete; a retry will be allowed later if the daily cap is not reached')
     process.exitCode = 1
   }
 } catch (error) {

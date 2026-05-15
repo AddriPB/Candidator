@@ -132,7 +132,7 @@ p {
 
 .toolbar {
   display: grid;
-  grid-template-columns: minmax(220px, 340px) auto;
+  grid-template-columns: minmax(220px, 340px) minmax(180px, 240px) auto;
   align-items: end;
   gap: 12px;
 }
@@ -275,6 +275,13 @@ label {
   padding: 16px;
 }
 
+.offer-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+
 .cv-list {
   display: grid;
   gap: 10px;
@@ -385,6 +392,28 @@ label {
   color: #24483c;
 }
 
+.application-pill {
+  border: 1px solid #d8ded2;
+  border-radius: 999px;
+  padding: 6px 10px;
+  color: #344139;
+  font-size: 0.88rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.application-pill.to-apply {
+  border-color: #b7d4c8;
+  background: #eef8f3;
+  color: #24483c;
+}
+
+.application-pill.applied {
+  border-color: #cbd5c1;
+  background: #f3f5f0;
+  color: #5d6a61;
+}
+
 .offer h2 {
   margin: 0 0 4px;
   color: #18211b;
@@ -413,6 +442,28 @@ label {
   font-weight: 800;
   text-decoration-thickness: 2px;
   text-underline-offset: 3px;
+}
+
+.offer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.apply-link {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 8px;
+  background: #1f5c4d;
+  color: #ffffff !important;
+  padding: 0 16px;
+  text-decoration: none;
+}
+
+.missing-link {
+  color: #6b756d;
+  font-weight: 800;
 }
 
 .emails {
@@ -447,6 +498,10 @@ label {
   }
 
   .toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .offer-header {
     grid-template-columns: 1fr;
   }
 

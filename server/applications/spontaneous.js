@@ -1,6 +1,6 @@
 import { sendEmail } from '../email/smtp.js'
 import { getCvState } from '../cv/storage.js'
-import { discoverContactsForOffer, isValidContactEmail, normalizeEmail } from './contactDiscovery.js'
+import { buildEsnDiscoveryOffers, buildWebDiscoveryOffers, discoverContactsForOffer, discoverEsnRecruiterContacts, discoverWebRecruiterContacts, isValidContactEmail, normalizeEmail } from './contactDiscovery.js'
 import {
   getAllApplicationContacts,
   getApplicationCandidateOffers,
@@ -12,6 +12,7 @@ import {
 } from '../storage/database.js'
 import {
   applicationOfferKey,
+  applicationDeliveryCheck,
   applicationRecipient,
   applicationSendWindow,
   buildApplicationContext,
@@ -38,6 +39,8 @@ export async function sendDailySpontaneousApplications({
   startedAt = null,
   now = new Date(),
   env = process.env,
+  config = {},
+  contactFetcher = fetch,
   mailer = sendEmail,
   logger = console,
 } = {}) {
@@ -68,6 +71,11 @@ export async function sendDailySpontaneousApplications({
     return stopWithSkip({ db, summary, now, reason: sendWindow.reason, dailyStopReason: sendWindow.reason, logger })
   }
 
+  const delivery = applicationDeliveryCheck(env)
+  if (!delivery.allowed) {
+    return stopWithSkip({ db, summary, now, reason: delivery.reason, dailyStopReason: delivery.reason, logger })
+  }
+
   if (!context.ready) {
     return stopWithSkip({ db, summary, now, reason: context.reason, dailyStopReason: context.reason, logger })
   }
@@ -80,7 +88,7 @@ export async function sendDailySpontaneousApplications({
     return stopWithSkip({ db, summary, now, reason: 'daily_failure_cap_reached', dailyStopReason: 'stop_after_3_failures', logger })
   }
 
-  const targets = await collectSpontaneousTargets({ db, offers: source.offers, env, now })
+  const targets = await collectSpontaneousTargets({ db, offers: source.offers, env, config, contactFetcher, now })
   summary.candidates = targets.length
   let attemptOfDay = failuresToday
 
@@ -201,14 +209,22 @@ export function spontaneousSendWindow(now, env = process.env) {
   })
 }
 
-async function collectSpontaneousTargets({ db, offers, env, now }) {
+async function collectSpontaneousTargets({ db, offers, env, config, contactFetcher, now }) {
   for (const offer of offers) {
     const offerKey = applicationOfferKey(offer)
-    const contacts = await discoverContactsForOffer(offer, { offerKey, env, now })
+    const contacts = await discoverContactsForOffer(offer, { offerKey, env, fetcher: contactFetcher, now })
     upsertApplicationContacts(db, contacts, { now })
   }
 
-  const offersByKey = new Map(offers.map((offer) => [applicationOfferKey(offer), offer]))
+  const esnOffers = buildEsnDiscoveryOffers(config.esn_contact_discovery)
+  const esnContacts = await discoverEsnRecruiterContacts(config, { env, fetcher: contactFetcher, now })
+  upsertApplicationContacts(db, esnContacts, { now })
+
+  const webOffers = buildWebDiscoveryOffers(config.web_contact_discovery)
+  const webContacts = await discoverWebRecruiterContacts(config, { fetcher: contactFetcher, now })
+  upsertApplicationContacts(db, webContacts, { now })
+
+  const offersByKey = new Map([...offers, ...esnOffers, ...webOffers].map((offer) => [applicationOfferKey(offer), offer]))
   const contacts = getAllApplicationContacts(db)
   const targets = []
   const seen = new Set()

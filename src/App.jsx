@@ -12,6 +12,11 @@ const ROLE_FILTERS = [
   { value: 'amoa', label: 'AMOA / Consultant AMOA', terms: ['amoa', 'consultant amoa'] },
   { value: 'moa', label: 'MOA / Consultant MOA', terms: ['moa', 'consultant moa'] },
 ]
+const APPLICATION_STATUS_FILTERS = [
+  { value: 'to-apply', label: 'À candidater' },
+  { value: 'applied', label: 'Candidatées' },
+  { value: 'all', label: 'Toutes' },
+]
 
 export default function App() {
   const [authenticated, setAuthenticated] = useState(false)
@@ -23,6 +28,7 @@ export default function App() {
   const [offersLoading, setOffersLoading] = useState(false)
   const [offersError, setOffersError] = useState('')
   const [roleFilter, setRoleFilter] = useState('all')
+  const [applicationStatusFilter, setApplicationStatusFilter] = useState('to-apply')
   const [checks, setChecks] = useState([])
   const [checksRunAt, setChecksRunAt] = useState(null)
   const [checksLoading, setChecksLoading] = useState(false)
@@ -39,9 +45,13 @@ export default function App() {
   const [cvUploading, setCvUploading] = useState(false)
 
   const api = useMemo(() => createApi(API_BASE), [])
-  const filteredOffers = useMemo(
+  const roleFilteredOffers = useMemo(
     () => filterOffersByRole(offers, ROLE_FILTERS.find((filter) => filter.value === roleFilter)),
     [offers, roleFilter],
+  )
+  const filteredOffers = useMemo(
+    () => filterOffersByApplicationStatus(roleFilteredOffers, applicationStatusFilter),
+    [roleFilteredOffers, applicationStatusFilter],
   )
 
   useEffect(() => {
@@ -313,7 +323,10 @@ export default function App() {
                 offersLoading={offersLoading}
                 offersRunAt={offersRunAt}
                 onRefresh={loadOffers}
+                applicationStatusFilter={applicationStatusFilter}
                 roleFilter={roleFilter}
+                roleFilteredOffers={roleFilteredOffers}
+                setApplicationStatusFilter={setApplicationStatusFilter}
                 setRoleFilter={setRoleFilter}
               />
             )}
@@ -326,8 +339,22 @@ export default function App() {
   )
 }
 
-function OffersScreen({ filteredOffers, offers, offersError, offersLoading, offersRunAt, onRefresh, roleFilter, setRoleFilter }) {
+function OffersScreen({
+  applicationStatusFilter,
+  filteredOffers,
+  offers,
+  offersError,
+  offersLoading,
+  offersRunAt,
+  onRefresh,
+  roleFilter,
+  roleFilteredOffers,
+  setApplicationStatusFilter,
+  setRoleFilter,
+}) {
   const visibleOffersWithEmail = filteredOffers.filter((offer) => offer.hasEmail || offer.emails?.length).length
+  const toApplyCount = roleFilteredOffers.filter((offer) => offer.applicationStatus !== 'candidatée').length
+  const appliedCount = roleFilteredOffers.filter((offer) => offer.applicationStatus === 'candidatée').length
 
   return (
     <div className="stack">
@@ -340,12 +367,22 @@ function OffersScreen({ filteredOffers, offers, offersError, offersLoading, offe
             ))}
           </select>
         </label>
+        <label>
+          Catégorie
+          <select value={applicationStatusFilter} onChange={(event) => setApplicationStatusFilter(event.target.value)}>
+            {APPLICATION_STATUS_FILTERS.map((filter) => (
+              <option key={filter.value} value={filter.value}>{filter.label}</option>
+            ))}
+          </select>
+        </label>
         <button type="button" onClick={onRefresh}>Actualiser</button>
       </div>
 
       <div className="summary">
         <strong>{filteredOffers.length}</strong>
         <span>offre{filteredOffers.length > 1 ? 's' : ''} affichée{filteredOffers.length > 1 ? 's' : ''}</span>
+        <span>{toApplyCount} à candidater</span>
+        <span>{appliedCount} candidatée{appliedCount > 1 ? 's' : ''}</span>
         <span>{visibleOffersWithEmail} avec email</span>
         {offersRunAt && <span>Dernier run : {formatDateTime(offersRunAt)}</span>}
       </div>
@@ -355,20 +392,26 @@ function OffersScreen({ filteredOffers, offers, offersError, offersLoading, offe
       {offersLoading ? (
         <p>Chargement des offres...</p>
       ) : offers.length === 0 ? (
-        <div className="empty">Aucune offre disponible dans le dernier résultat d'API.</div>
+        <div className="empty">Aucune offre enregistrée en base.</div>
       ) : filteredOffers.length === 0 ? (
         <div className="empty">Aucune offre ne correspond à ce filtre.</div>
       ) : (
         <div className="offer-list">
           {filteredOffers.map((offer) => (
-            <article className="offer" key={offer.id}>
-              <div>
-                <h2>{offer.title || 'Poste sans titre'}</h2>
-                <p>{offer.company || 'Entreprise non renseignée'} · {offer.location || 'Lieu non renseigné'}</p>
+            <article className="offer" key={offer.offerKey || offer.id}>
+              <div className="offer-header">
+                <div>
+                  <h2>{offer.title || 'Poste sans titre'}</h2>
+                  <p>{offer.company || 'Entreprise non renseignée'} · {offer.location || 'Lieu non renseigné'}</p>
+                </div>
+                <span className={`application-pill ${offer.applicationStatus === 'candidatée' ? 'applied' : 'to-apply'}`}>
+                  {offer.applicationStatus === 'candidatée' ? 'Candidatée' : 'À candidater'}
+                </span>
               </div>
               <div className="meta">
                 <span>{formatSources(offer)}</span>
                 {formatOfferDate(offer) && <span>{formatOfferDate(offer)}</span>}
+                {offer.applicationLastSentAt && <span>Candidature : {formatDateTime(offer.applicationLastSentAt)}</span>}
                 {offer.verdict && <span>{offer.verdict}</span>}
                 {Number.isFinite(offer.score) && <span>{offer.score}/100</span>}
                 {offer.remote && <span>{offer.remote}</span>}
@@ -382,7 +425,15 @@ function OffersScreen({ filteredOffers, offers, offersError, offersLoading, offe
                   ))}
                 </div>
               )}
-              {offer.link && <a href={offer.link} target="_blank" rel="noreferrer">Voir l'offre</a>}
+              <div className="offer-actions">
+                {offer.link ? (
+                  <a className="apply-link" href={offer.link} target="_blank" rel="noreferrer">
+                    Postuler
+                  </a>
+                ) : (
+                  <span className="missing-link">Lien direct indisponible</span>
+                )}
+              </div>
             </article>
           ))}
         </div>
@@ -752,6 +803,12 @@ function filterOffersByRole(offers, filter) {
     const text = normalizeSearchText([offer.title, offer.query, offer.description].join(' '))
     return filter.terms.some((term) => matchesRoleTerm(text, term))
   })
+}
+
+function filterOffersByApplicationStatus(offers, filter) {
+  if (filter === 'all') return offers
+  if (filter === 'applied') return offers.filter((offer) => offer.applicationStatus === 'candidatée')
+  return offers.filter((offer) => offer.applicationStatus !== 'candidatée')
 }
 
 function matchesRoleTerm(text, term) {

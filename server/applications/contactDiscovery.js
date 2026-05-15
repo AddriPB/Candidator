@@ -1,6 +1,28 @@
 const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi
 const MAILTO_PATTERN = /mailto:([^"' <>)?]+)/gi
 const GENERIC_RECRUITING_LOCALS = ['recrutement', 'jobs', 'talent', 'rh', 'careers']
+const ESN_CONTACT_LOCALS = [
+  ...GENERIC_RECRUITING_LOCALS,
+  'recruteurs',
+  'recrutement-france',
+  'recrutement.paris',
+  'business',
+  'commercial',
+  'commerce',
+  'sales',
+  'contact',
+]
+const ESN_DISCOVERY_PATHS = [
+  '',
+  '/contact',
+  '/nous-contacter',
+  '/recrutement',
+  '/carrieres',
+  '/carriere',
+  '/careers',
+  '/jobs',
+]
+const DEFAULT_WEB_SEARCH_URL_TEMPLATE = 'https://html.duckduckgo.com/html/?q={query}'
 const TRUSTED_STATUSES = new Set(['candidate', 'soft_bounced', 'retry_scheduled'])
 
 const EXCLUDED_CONTACT_DOMAINS = [
@@ -20,7 +42,20 @@ const EXCLUDED_CONTACT_DOMAINS = [
   'jobrapido.',
   'meteojob.',
   'google.',
+  'bing.',
+  'duckduckgo.',
 ]
+
+const EXCLUDED_SEARCH_RESULT_DOMAINS = [
+  ...EXCLUDED_CONTACT_DOMAINS,
+  'qwant.',
+  'ecosia.',
+  'yahoo.',
+]
+
+const ESN_RELEVANCE_PATTERN = /\b(esn|ssii|cabinet de conseil|conseil en technologie|conseil it|services numeriques|services numériques|transformation digitale|amoa|moa|product owner|business analyst)\b/i
+const IDF_RELEVANCE_PATTERN = /\b(idf|ile[- ]de[- ]france|île[- ]de[- ]france|paris|la defense|la défense|neuilly|boulogne|issy|levallois|puteaux|nanterre|courbevoie)\b/i
+const RECRUITER_RELEVANCE_PATTERN = /\b(recrut\w*|rh|talent|carrieres|carrières|commercial|business|sales|contact)\b/i
 
 export async function discoverContactsForOffer(offer, {
   offerKey = '',
@@ -28,6 +63,7 @@ export async function discoverContactsForOffer(offer, {
   fetcher = fetch,
   fetchPages = true,
   maxPages = 4,
+  genericLocals = GENERIC_RECRUITING_LOCALS,
   now = new Date(),
 } = {}) {
   const candidates = []
@@ -68,7 +104,7 @@ export async function discoverContactsForOffer(offer, {
 
   const domain = bestCompanyDomain(offer, sourceUrls)
   if (domain) {
-    for (const local of GENERIC_RECRUITING_LOCALS) {
+    for (const local of genericLocals) {
       candidates.push(contact({
         offerKey: key,
         email: `${local}@${domain}`,
@@ -96,6 +132,128 @@ export async function discoverContactsForOffer(offer, {
   return dedupeContacts(candidates)
     .filter((item) => item.offerKey && isValidContactEmail(item.email))
     .sort(compareContacts)
+}
+
+export async function discoverEsnRecruiterContacts(config = {}, {
+  env = process.env,
+  fetcher = fetch,
+  fetchPages = true,
+  now = new Date(),
+} = {}) {
+  const discovery = normalizeEsnContactDiscoveryConfig(config.esn_contact_discovery)
+  if (!discovery.enabled) return []
+
+  const contacts = []
+  for (const offer of buildEsnDiscoveryOffers(discovery)) {
+    contacts.push(...await discoverContactsForOffer(offer, {
+      offerKey: applicationEsnOfferKey(offer.company),
+      env,
+      fetcher,
+      fetchPages,
+      maxPages: discovery.max_pages_per_company,
+      genericLocals: ESN_CONTACT_LOCALS,
+      now,
+    }))
+  }
+  return dedupeContacts(contacts).sort(compareContacts)
+}
+
+export function buildEsnDiscoveryOffers(discovery = {}) {
+  return normalizeEsnContactDiscoveryConfig(discovery).companies.map((company) => {
+    const url = normalizeCompanyUrl(company.url || company.domain)
+    const domain = domainFromUrl(url)
+    const id = esnContactOfferId(company.name)
+    return {
+      id,
+      source: 'esn_contact_discovery',
+      sourceId: id,
+      title: `Contacts RH et commerciaux ESN - ${company.name}`,
+      company: company.name,
+      link: '',
+      description: 'Découverte globale de recruteurs RH et commerciaux en ESN.',
+      emails: [],
+      raw: {
+        employer_website: url,
+        discovery_urls: buildDiscoveryUrls(url, company.paths || ESN_DISCOVERY_PATHS),
+        company_domain: domain,
+      },
+    }
+  })
+}
+
+export async function discoverWebRecruiterContacts(config = {}, {
+  fetcher = fetch,
+  fetchPages = true,
+  now = new Date(),
+} = {}) {
+  const discovery = normalizeWebContactDiscoveryConfig(config.web_contact_discovery)
+  if (!discovery.enabled) return []
+
+  const contacts = []
+  for (const query of discovery.queries) {
+    const offerKey = applicationWebOfferKey(query.label)
+    const searchUrl = discovery.search_url_template.replace('{query}', encodeURIComponent(query.text))
+    const searchHtml = await fetchPublicPage(searchUrl, fetcher)
+    const searchContext = `${query.text} ${searchHtml}`
+
+    if (looksLikeEsnIdfRecruiterPage(searchContext)) {
+      addEmails(contacts, extractMailtoEmails(searchHtml), {
+        offerKey,
+        method: 'web_search_result',
+        sourceUrl: searchUrl,
+        confidence: 92,
+        now,
+      })
+      addEmails(contacts, extractEmails(searchHtml), {
+        offerKey,
+        method: 'web_search_result',
+        sourceUrl: searchUrl,
+        confidence: 88,
+        now,
+      })
+    }
+
+    if (!fetchPages) continue
+    const resultUrls = extractSearchResultUrls(searchHtml, query.text).slice(0, discovery.max_results_per_query)
+    for (const resultUrl of resultUrls.slice(0, discovery.max_pages_per_query)) {
+      const html = await fetchPublicPage(resultUrl, fetcher)
+      if (!html) continue
+      if (!looksLikeEsnIdfRecruiterPage(`${resultUrl} ${html}`)) continue
+      addEmails(contacts, extractMailtoEmails(html), {
+        offerKey,
+        method: 'web_public_page',
+        sourceUrl: resultUrl,
+        confidence: 90,
+        now,
+      })
+      addEmails(contacts, extractEmails(html), {
+        offerKey,
+        method: 'web_public_page',
+        sourceUrl: resultUrl,
+        confidence: 82,
+        now,
+      })
+    }
+  }
+
+  return dedupeContacts(contacts).sort(compareContacts)
+}
+
+export function buildWebDiscoveryOffers(discovery = {}) {
+  return normalizeWebContactDiscoveryConfig(discovery).queries.map((query) => {
+    const id = webContactOfferId(query.label)
+    return {
+      id,
+      source: 'web_contact_discovery',
+      sourceId: id,
+      title: `Contacts recruteurs web - ${query.label}`,
+      company: query.label,
+      link: '',
+      description: `Découverte web publique: ${query.text}`,
+      emails: [],
+      raw: {},
+    }
+  })
 }
 
 export function chooseNextContact({ contacts, sends = [], now = new Date(), env = process.env } = {}) {
@@ -192,6 +350,7 @@ function collectSourceUrls(offer) {
   const raw = offer.raw || {}
   const values = [
     offer.link,
+    ...(Array.isArray(raw.discovery_urls) ? raw.discovery_urls : []),
     raw.urlPostulation,
     raw.origineOffre?.urlOrigine,
     raw.contact?.urlPostulation,
@@ -253,6 +412,101 @@ function domainFromUrl(url) {
   }
 }
 
+function normalizeEsnContactDiscoveryConfig(discovery = {}) {
+  const companies = Array.isArray(discovery?.companies)
+    ? discovery.companies
+      .map(normalizeEsnCompany)
+      .filter((company) => company.name && (company.domain || company.url))
+    : []
+
+  return {
+    enabled: discovery?.enabled === true,
+    max_pages_per_company: positiveInteger(discovery?.max_pages_per_company, 6),
+    companies,
+  }
+}
+
+function normalizeWebContactDiscoveryConfig(discovery = {}) {
+  const queries = Array.isArray(discovery?.queries)
+    ? discovery.queries
+      .map(normalizeWebQuery)
+      .filter((query) => query.text && query.label)
+    : []
+
+  return {
+    enabled: discovery?.enabled === true,
+    search_url_template: String(discovery?.search_url_template || DEFAULT_WEB_SEARCH_URL_TEMPLATE),
+    max_results_per_query: positiveInteger(discovery?.max_results_per_query, 5),
+    max_pages_per_query: positiveInteger(discovery?.max_pages_per_query, 3),
+    queries,
+  }
+}
+
+function normalizeWebQuery(query = {}) {
+  if (typeof query === 'string') return { label: query, text: query }
+  const text = String(query.query || query.text || '').trim()
+  return {
+    label: String(query.label || query.company || text || '').trim(),
+    text,
+  }
+}
+
+function normalizeEsnCompany(company = {}) {
+  if (typeof company === 'string') {
+    return { name: company, domain: company, url: normalizeCompanyUrl(company), paths: ESN_DISCOVERY_PATHS }
+  }
+  return {
+    name: String(company.name || company.domain || company.url || '').trim(),
+    domain: String(company.domain || '').trim(),
+    url: normalizeCompanyUrl(company.url || company.domain || ''),
+    paths: Array.isArray(company.paths) && company.paths.length ? company.paths : ESN_DISCOVERY_PATHS,
+  }
+}
+
+function normalizeCompanyUrl(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  if (/^https?:\/\//i.test(text)) return text
+  return `https://${text}`
+}
+
+function buildDiscoveryUrls(baseUrl, paths) {
+  const urls = []
+  for (const path of paths) {
+    try {
+      urls.push(new URL(path || '/', baseUrl).toString())
+    } catch {
+      // ignore invalid seed urls
+    }
+  }
+  return Array.from(new Set(urls))
+}
+
+function applicationEsnOfferKey(companyName) {
+  return `id:${esnContactOfferId(companyName)}`
+}
+
+function esnContactOfferId(companyName) {
+  return `esn:${slugify(companyName)}`
+}
+
+function applicationWebOfferKey(label) {
+  return `id:${webContactOfferId(label)}`
+}
+
+function webContactOfferId(label) {
+  return `web:${slugify(label)}`
+}
+
+function slugify(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'unknown'
+}
+
 function isExcludedContactDomain(domain) {
   return EXCLUDED_CONTACT_DOMAINS.some((item) => domain.includes(item))
 }
@@ -278,9 +532,56 @@ function looksLikeCareerPage(url, html) {
   return /(recrut|career|carriere|carrière|talent|join|emploi|job)/.test(text)
 }
 
+function looksLikeEsnIdfRecruiterPage(value) {
+  const text = String(value || '').slice(0, 30000)
+  return ESN_RELEVANCE_PATTERN.test(text)
+    && IDF_RELEVANCE_PATTERN.test(text)
+    && RECRUITER_RELEVANCE_PATTERN.test(text)
+}
+
 function extractUrls(value) {
   const text = String(value || '')
   return text.match(/https?:\/\/[^\s"'<>]+/gi) || []
+}
+
+function extractSearchResultUrls(html, queryText = '') {
+  const urls = []
+  const text = String(html || '')
+  for (const match of text.matchAll(/href=["']([^"']+)["']/gi)) {
+    const url = normalizeSearchResultUrl(match[1], queryText)
+    if (url) urls.push(url)
+  }
+  for (const url of extractUrls(text)) {
+    const normalized = normalizeSearchResultUrl(url, queryText)
+    if (normalized) urls.push(normalized)
+  }
+  return Array.from(new Set(urls))
+}
+
+function normalizeSearchResultUrl(value, queryText = '') {
+  const href = decodeHtmlEntities(String(value || '').trim())
+  if (!href) return ''
+  try {
+    const parsed = new URL(href, 'https://duckduckgo.com')
+    const target = parsed.searchParams.get('uddg') || parsed.searchParams.get('u') || parsed.toString()
+    const result = new URL(decodeURIComponent(target))
+    result.hash = ''
+    const domain = result.hostname.toLowerCase().replace(/^www\./, '')
+    if (!/^https?:$/i.test(result.protocol)) return ''
+    if (!domain || EXCLUDED_SEARCH_RESULT_DOMAINS.some((item) => domain.includes(item))) return ''
+    return result.toString().replace(/[),.;:]+$/g, '')
+  } catch {
+    return ''
+  }
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
 }
 
 function normalizeEmailMatches(matches) {
@@ -321,7 +622,7 @@ function compareContacts(a, b) {
 }
 
 function methodRank(method) {
-  return ['raw_offer', 'apply_page', 'recruiter_public', 'generic_domain', 'inferred'].indexOf(method) + 1 || 99
+  return ['raw_offer', 'apply_page', 'recruiter_public', 'web_search_result', 'web_public_page', 'generic_domain', 'inferred'].indexOf(method) + 1 || 99
 }
 
 function normalizeNameParts(value) {
