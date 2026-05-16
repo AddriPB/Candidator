@@ -21,6 +21,7 @@ logs/
 .env
 .env.local
 .env.*.local
+config/candidate-profiles.local.json
 
 # Local tooling
 .DS_Store

@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
+import { detectRole } from '../radar/filter.js'
 
 const require = createRequire(import.meta.url)
 
@@ -33,12 +34,14 @@ export function pruneOldData(db, retentionDays = Number(process.env.DATA_RETENTI
     const beforeOfferEmails = db.data.offerEmails.length
     const beforeApplicationEmailSends = db.data.applicationEmailSends.length
     const beforeApplicationContacts = db.data.applicationContacts.length
+    const beforeApplicationOpportunities = db.data.applicationOpportunities.length
     const applicationEmailCutoff = new Date(Date.now() - Math.max(days, applicationEmailBlockDays()) * 24 * 60 * 60 * 1000).toISOString()
     db.data.sourceChecks = db.data.sourceChecks.filter((row) => row.checkedAt >= cutoff)
     db.data.radarRuns = db.data.radarRuns.filter((row) => row.startedAt >= cutoff)
     db.data.offerEmails = db.data.offerEmails.filter((row) => row.runStartedAt >= cutoff)
     db.data.applicationEmailSends = db.data.applicationEmailSends.filter((row) => row.sentAt >= applicationEmailCutoff)
     db.data.applicationContacts = db.data.applicationContacts.filter((row) => !row.updatedAt || row.updatedAt >= applicationEmailCutoff)
+    db.data.applicationOpportunities = db.data.applicationOpportunities.filter((row) => !row.updatedAt || row.updatedAt >= applicationEmailCutoff)
     writeJsonStore(db)
     return {
       cutoff,
@@ -47,6 +50,7 @@ export function pruneOldData(db, retentionDays = Number(process.env.DATA_RETENTI
       offerEmails: beforeOfferEmails - db.data.offerEmails.length,
       applicationEmailSends: beforeApplicationEmailSends - db.data.applicationEmailSends.length,
       applicationContacts: beforeApplicationContacts - db.data.applicationContacts.length,
+      applicationOpportunities: beforeApplicationOpportunities - db.data.applicationOpportunities.length,
     }
   }
   const applicationEmailCutoff = new Date(Date.now() - Math.max(days, applicationEmailBlockDays()) * 24 * 60 * 60 * 1000).toISOString()
@@ -55,7 +59,8 @@ export function pruneOldData(db, retentionDays = Number(process.env.DATA_RETENTI
   const offerEmails = db.db.prepare('DELETE FROM offer_emails WHERE run_started_at < ?').run(cutoff).changes
   const applicationEmailSends = db.db.prepare('DELETE FROM application_email_sends WHERE sent_at < ?').run(applicationEmailCutoff).changes
   const applicationContacts = db.db.prepare('DELETE FROM application_contacts WHERE updated_at < ?').run(applicationEmailCutoff).changes
-  return { cutoff, sourceChecks, radarRuns, offerEmails, applicationEmailSends, applicationContacts }
+  const applicationOpportunities = db.db.prepare('DELETE FROM application_opportunities WHERE updated_at < ?').run(applicationEmailCutoff).changes
+  return { cutoff, sourceChecks, radarRuns, offerEmails, applicationEmailSends, applicationContacts, applicationOpportunities }
 }
 
 export function saveSourceCheckLogs(db, logs) {
@@ -85,6 +90,7 @@ export function saveSourceCheckLogs(db, logs) {
 
 export function saveRadarRun(db, { startedAt, summary, logs, offers, reports }) {
   saveSourceCheckLogs(db, logs)
+  upsertApplicationOpportunities(db, offers.map((offer) => opportunityFromOffer(offer, { now: startedAt })))
   const offerEmails = collectOfferEmails({ startedAt, offers })
   const storedOffers = offers.filter(isVisibleOffer)
   if (db.kind === 'json') {
@@ -205,6 +211,7 @@ export function getRecentApplicationEmailSends(db, cutoff) {
   }
   return db.db.prepare(`
     SELECT sent_at AS sentAt,
+           profile_pseudo AS profilePseudo,
            action_type AS actionType,
            offer_key AS offerKey,
            offer_id AS offerId,
@@ -237,6 +244,7 @@ export function getApplicationEmailSends(db, { since = new Date(0).toISOString()
   }
   const rows = db.db.prepare(`
     SELECT sent_at AS sentAt,
+           profile_pseudo AS profilePseudo,
            action_type AS actionType,
            offer_key AS offerKey,
            offer_id AS offerId,
@@ -270,10 +278,11 @@ export function saveApplicationEmailSend(db, row) {
   }
   db.db.prepare(`
     INSERT INTO application_email_sends (
-      sent_at, action_type, offer_key, offer_id, offer_title, company, contact_name, original_to, sent_to, subject, message_id, attempt_id, contact_email, attempt_of_day, skip_reason, daily_stop_reason, status, error
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      sent_at, profile_pseudo, action_type, offer_key, offer_id, offer_title, company, contact_name, original_to, sent_to, subject, message_id, attempt_id, contact_email, attempt_of_day, skip_reason, daily_stop_reason, status, error
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     row.sentAt,
+    row.profilePseudo || '',
     row.actionType || 'job_offer_application',
     row.offerKey,
     row.offerId,
@@ -292,6 +301,142 @@ export function saveApplicationEmailSend(db, row) {
     row.status,
     row.error || '',
   )
+}
+
+export function upsertApplicationOpportunity(db, opportunity) {
+  upsertApplicationOpportunities(db, [opportunity])
+}
+
+export function upsertApplicationOpportunities(db, opportunities, { now = new Date() } = {}) {
+  const rows = opportunities.map((item) => normalizeApplicationOpportunity(item, now)).filter((item) => item.opportunityKey)
+  if (!rows.length) return
+
+  if (db.kind === 'json') {
+    refreshJsonStore(db)
+    for (const row of rows) {
+      const index = db.data.applicationOpportunities.findIndex((item) => item.opportunityKey === row.opportunityKey)
+      const existing = index >= 0 ? normalizeApplicationOpportunity(db.data.applicationOpportunities[index], now) : null
+      const next = mergeOpportunity(existing, row)
+      if (index >= 0) db.data.applicationOpportunities[index] = next
+      else db.data.applicationOpportunities.push(next)
+    }
+    writeJsonStore(db)
+    return
+  }
+
+  const select = db.db.prepare('SELECT opportunity_key AS opportunityKey, detected_at AS detectedAt, updated_at AS updatedAt, source, company, title, url, recruiter_email AS recruiterEmail, application_type AS applicationType, status, reason, sent_at AS sentAt, offer_id AS offerId FROM application_opportunities WHERE opportunity_key = ?')
+  const insert = db.db.prepare(`
+    INSERT INTO application_opportunities (
+      opportunity_key, detected_at, updated_at, source, company, title, url, recruiter_email, application_type, status, reason, sent_at, offer_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const update = db.db.prepare(`
+    UPDATE application_opportunities
+    SET updated_at = ?,
+        source = ?,
+        company = ?,
+        title = ?,
+        url = ?,
+        recruiter_email = ?,
+        application_type = ?,
+        status = ?,
+        reason = ?,
+        sent_at = ?,
+        offer_id = ?
+    WHERE opportunity_key = ?
+  `)
+  const trx = db.db.transaction(() => {
+    for (const row of rows) {
+      const existing = select.get(row.opportunityKey)
+      const next = mergeOpportunity(existing ? normalizeApplicationOpportunity(existing, now) : null, row)
+      if (!existing) {
+        insert.run(
+          next.opportunityKey,
+          next.detectedAt,
+          next.updatedAt,
+          next.source,
+          next.company,
+          next.title,
+          next.url,
+          next.recruiterEmail,
+          next.applicationType,
+          next.status,
+          next.reason,
+          next.sentAt,
+          next.offerId,
+        )
+      } else {
+        update.run(
+          next.updatedAt,
+          next.source,
+          next.company,
+          next.title,
+          next.url,
+          next.recruiterEmail,
+          next.applicationType,
+          next.status,
+          next.reason,
+          next.sentAt,
+          next.offerId,
+          next.opportunityKey,
+        )
+      }
+    }
+  })
+  trx()
+}
+
+export function updateApplicationOpportunityStatus(db, { opportunityKey, status, reason = '', sentAt = '', recruiterEmail = '' }) {
+  if (!opportunityKey) return
+  upsertApplicationOpportunity(db, {
+    opportunityKey,
+    status,
+    reason,
+    sentAt,
+    recruiterEmail,
+  })
+}
+
+export function getApplicationOpportunities(db, { since = new Date(0).toISOString(), statuses = [] } = {}) {
+  if (db.kind === 'json') {
+    refreshJsonStore(db)
+    return db.data.applicationOpportunities
+      .map((row) => normalizeApplicationOpportunity(row))
+      .filter((row) => row.detectedAt >= since || row.updatedAt >= since || row.sentAt >= since)
+      .filter((row) => statuses.length === 0 || statuses.includes(row.status))
+      .sort((a, b) => String(b.updatedAt || b.detectedAt).localeCompare(String(a.updatedAt || a.detectedAt)))
+  }
+  const rows = db.db.prepare(`
+    SELECT opportunity_key AS opportunityKey,
+           detected_at AS detectedAt,
+           updated_at AS updatedAt,
+           source,
+           company,
+           title,
+           url,
+           recruiter_email AS recruiterEmail,
+           application_type AS applicationType,
+           status,
+           reason,
+           sent_at AS sentAt,
+           offer_id AS offerId
+    FROM application_opportunities
+    WHERE detected_at >= ? OR updated_at >= ? OR sent_at >= ?
+    ORDER BY updated_at DESC, detected_at DESC
+  `).all(since, since, since).map((row) => normalizeApplicationOpportunity(row))
+  return statuses.length ? rows.filter((row) => statuses.includes(row.status)) : rows
+}
+
+export function applicationOpportunityKeyFromOffer(offer, { email = '', applicationType = 'job_offer_application' } = {}) {
+  const normalizedEmail = normalizeEmail(email)
+  if (applicationType === 'spontaneous_application' && normalizedEmail) return `spontaneous:${normalizedEmail}`
+  if (offer?.link) return `url:${normalizeUrl(offer.link)}`
+  const company = normalizeKeyPart(offer?.company)
+  const title = normalizeKeyPart(offer?.title)
+  if (company && title) return `company-title:${company}|${title}`
+  if (normalizedEmail) return `email:${normalizedEmail}`
+  if (offer?.id) return `id:${offer.id}`
+  return ''
 }
 
 export function getAllApplicationContacts(db) {
@@ -510,12 +655,17 @@ function toPublicOffer(offer) {
 }
 
 function isVisibleOffer(offer) {
-  return offer.verdict !== 'à rejeter' && offer.evaluation?.status !== 'à rejeter'
+  return offer.verdict !== 'à rejeter' && offer.evaluation?.status !== 'à rejeter' && hasStrictTargetRole(offer)
 }
 
 function isApplicationCandidateOffer(offer, { since, now, requireEmail = false }) {
   if (!isVisibleOffer(offer) || !isRecentOffer(offer, { since, now })) return false
   return !requireEmail || (Array.isArray(offer.emails) && offer.emails.length > 0)
+}
+
+function hasStrictTargetRole(offer) {
+  const role = detectRole(String(offer.title || ''), String(offer.title || ''))
+  return role.status === 'clear' || role.status === 'compatible'
 }
 
 function isRecentOffer(offer, { since, now }) {
@@ -596,6 +746,7 @@ function migrate(db) {
     CREATE TABLE IF NOT EXISTS application_email_sends (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       sent_at TEXT NOT NULL,
+      profile_pseudo TEXT NOT NULL DEFAULT '',
       action_type TEXT NOT NULL DEFAULT 'job_offer_application',
       offer_key TEXT NOT NULL,
       offer_id TEXT NOT NULL,
@@ -634,17 +785,42 @@ function migrate(db) {
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_application_contacts_offer_email
       ON application_contacts(offer_key, email);
+
+    CREATE TABLE IF NOT EXISTS application_opportunities (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      opportunity_key TEXT NOT NULL,
+      detected_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT '',
+      company TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '',
+      url TEXT NOT NULL DEFAULT '',
+      recruiter_email TEXT NOT NULL DEFAULT '',
+      application_type TEXT NOT NULL DEFAULT 'job_offer_application',
+      status TEXT NOT NULL DEFAULT 'detected',
+      reason TEXT NOT NULL DEFAULT '',
+      sent_at TEXT NOT NULL DEFAULT '',
+      offer_id TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_application_opportunities_key
+      ON application_opportunities(opportunity_key);
+
+    CREATE INDEX IF NOT EXISTS idx_application_opportunities_status_updated
+      ON application_opportunities(status, updated_at);
   `)
 
   ensureColumn(db, 'source_checks', 'offers_count', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(db, 'source_checks', 'errors_count', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(db, 'application_email_sends', 'attempt_id', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(db, 'application_email_sends', 'contact_email', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(db, 'application_email_sends', 'profile_pseudo', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(db, 'application_email_sends', 'action_type', "TEXT NOT NULL DEFAULT 'job_offer_application'")
   ensureColumn(db, 'application_email_sends', 'contact_name', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(db, 'application_email_sends', 'attempt_of_day', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(db, 'application_email_sends', 'skip_reason', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(db, 'application_email_sends', 'daily_stop_reason', "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(db, 'application_opportunities', 'offer_id', "TEXT NOT NULL DEFAULT ''")
 }
 
 function ensureColumn(db, table, column, definition) {
@@ -672,13 +848,18 @@ function importJsonStoreIfSqliteEmpty(db, dbPath) {
   `)
   const insertSend = db.prepare(`
     INSERT INTO application_email_sends (
-      sent_at, action_type, offer_key, offer_id, offer_title, company, contact_name, original_to, sent_to, subject, message_id, attempt_id, contact_email, attempt_of_day, skip_reason, daily_stop_reason, status, error
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      sent_at, profile_pseudo, action_type, offer_key, offer_id, offer_title, company, contact_name, original_to, sent_to, subject, message_id, attempt_id, contact_email, attempt_of_day, skip_reason, daily_stop_reason, status, error
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   const insertContact = db.prepare(`
     INSERT OR IGNORE INTO application_contacts (
       offer_key, email, method, source_url, confidence, status, last_attempt_at, bounce_reason, attempts, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const insertOpportunity = db.prepare(`
+    INSERT OR IGNORE INTO application_opportunities (
+      opportunity_key, detected_at, updated_at, source, company, title, url, recruiter_email, application_type, status, reason, sent_at, offer_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const trx = db.transaction(() => {
@@ -709,6 +890,7 @@ function importJsonStoreIfSqliteEmpty(db, dbPath) {
       const normalized = normalizeApplicationEmailSend(row)
       insertSend.run(
         normalized.sentAt || '',
+        normalized.profilePseudo || '',
         normalized.actionType || 'job_offer_application',
         normalized.offerKey || '',
         normalized.offerId || '',
@@ -744,13 +926,32 @@ function importJsonStoreIfSqliteEmpty(db, dbPath) {
         row.updatedAt || row.updated_at || '',
       )
     }
+    for (const row of data.applicationOpportunities) {
+      const normalized = normalizeApplicationOpportunity(row)
+      if (!normalized.opportunityKey) continue
+      insertOpportunity.run(
+        normalized.opportunityKey,
+        normalized.detectedAt,
+        normalized.updatedAt,
+        normalized.source,
+        normalized.company,
+        normalized.title,
+        normalized.url,
+        normalized.recruiterEmail,
+        normalized.applicationType,
+        normalized.status,
+        normalized.reason,
+        normalized.sentAt,
+        normalized.offerId,
+      )
+    }
   })
   trx()
   console.log(`[storage] imported JSON store into SQLite from ${jsonPath}`)
 }
 
 function sqliteStoreIsEmpty(db) {
-  const tables = ['source_checks', 'radar_runs', 'offer_emails', 'application_email_sends', 'application_contacts']
+  const tables = ['source_checks', 'radar_runs', 'offer_emails', 'application_email_sends', 'application_contacts', 'application_opportunities']
   return tables.every((table) => Number(db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count || 0) === 0)
 }
 
@@ -784,6 +985,7 @@ function normalizeJsonStore(data) {
     offerEmails: Array.isArray(data?.offerEmails) ? data.offerEmails : [],
     applicationEmailSends: Array.isArray(data?.applicationEmailSends) ? data.applicationEmailSends : [],
     applicationContacts: Array.isArray(data?.applicationContacts) ? data.applicationContacts : [],
+    applicationOpportunities: Array.isArray(data?.applicationOpportunities) ? data.applicationOpportunities : [],
   }
 }
 
@@ -827,12 +1029,97 @@ function writeJsonStore(store) {
 function normalizeApplicationEmailSend(row) {
   return {
     ...row,
+    profilePseudo: row.profilePseudo || row.profile_pseudo || '',
     actionType: row.actionType || row.action_type || 'job_offer_application',
     contactName: row.contactName || row.contact_name || '',
     attemptOfDay: Number(row.attemptOfDay || row.attempt_of_day || 0),
     skipReason: row.skipReason || row.skip_reason || '',
     dailyStopReason: row.dailyStopReason || row.daily_stop_reason || '',
   }
+}
+
+function opportunityFromOffer(offer, { now = new Date() } = {}) {
+  const rejected = offer.verdict === 'à rejeter' || offer.evaluation?.status === 'à rejeter'
+  return {
+    opportunityKey: applicationOpportunityKeyFromOffer(offer),
+    detectedAt: offer.collectedAt || offer.publishedAt || String(now),
+    updatedAt: String(now),
+    source: offer.source || '',
+    company: offer.company || '',
+    title: offer.title || '',
+    url: offer.link || '',
+    recruiterEmail: Array.isArray(offer.emails) ? normalizeEmail(offer.emails[0]) : '',
+    applicationType: 'job_offer_application',
+    status: rejected ? 'rejected' : 'retained',
+    reason: rejected ? (offer.evaluation?.rejectReasons || []).join(', ') : '',
+    sentAt: '',
+    offerId: String(offer.id || ''),
+  }
+}
+
+function normalizeApplicationOpportunity(row, now = new Date()) {
+  const date = typeof now === 'string' ? now : now.toISOString()
+  const key = row?.opportunityKey || row?.opportunity_key || ''
+  return {
+    opportunityKey: key,
+    detectedAt: row?.detectedAt || row?.detected_at || date,
+    updatedAt: row?.updatedAt || row?.updated_at || date,
+    source: String(row?.source || ''),
+    company: String(row?.company || ''),
+    title: String(row?.title || ''),
+    url: String(row?.url || ''),
+    recruiterEmail: normalizeEmail(row?.recruiterEmail || row?.recruiter_email || ''),
+    applicationType: String(row?.applicationType || row?.application_type || 'job_offer_application'),
+    status: normalizeOpportunityStatus(row?.status),
+    reason: String(row?.reason || ''),
+    sentAt: row?.sentAt || row?.sent_at || '',
+    offerId: String(row?.offerId || row?.offer_id || ''),
+  }
+}
+
+function mergeOpportunity(existing, incoming) {
+  if (!existing) return incoming
+  const status = chooseOpportunityStatus(existing.status, incoming.status)
+  return {
+    opportunityKey: existing.opportunityKey || incoming.opportunityKey,
+    detectedAt: existing.detectedAt && existing.detectedAt < incoming.detectedAt ? existing.detectedAt : incoming.detectedAt || existing.detectedAt,
+    updatedAt: incoming.updatedAt || existing.updatedAt,
+    source: incoming.source || existing.source,
+    company: incoming.company || existing.company,
+    title: incoming.title || existing.title,
+    url: incoming.url || existing.url,
+    recruiterEmail: incoming.recruiterEmail || existing.recruiterEmail,
+    applicationType: incoming.applicationType || existing.applicationType,
+    status,
+    reason: incoming.reason || existing.reason,
+    sentAt: incoming.sentAt || existing.sentAt,
+    offerId: incoming.offerId || existing.offerId,
+  }
+}
+
+function chooseOpportunityStatus(existing, incoming) {
+  const existingRank = opportunityStatusRank(existing)
+  const incomingRank = opportunityStatusRank(incoming)
+  if (existing === 'sent' && ['detected', 'retained', 'prepared', 'rejected'].includes(incoming)) return existing
+  if (existing === 'bounced' && incoming !== 'sent') return existing
+  return incomingRank >= existingRank ? incoming : existing
+}
+
+function normalizeOpportunityStatus(status) {
+  const value = String(status || 'detected')
+  return ['detected', 'retained', 'prepared', 'sent', 'failed', 'rejected', 'bounced'].includes(value) ? value : 'detected'
+}
+
+function opportunityStatusRank(status) {
+  return {
+    detected: 1,
+    retained: 2,
+    prepared: 3,
+    failed: 4,
+    rejected: 4,
+    sent: 5,
+    bounced: 6,
+  }[normalizeOpportunityStatus(status)]
 }
 
 function collectOfferEmails({ startedAt, offers }) {
@@ -871,4 +1158,13 @@ function normalizeUrl(url) {
 
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase()
+}
+
+function normalizeKeyPart(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
 }

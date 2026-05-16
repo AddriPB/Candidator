@@ -1,5 +1,6 @@
 import { sendEmail } from '../email/smtp.js'
 import { getCvState } from '../cv/storage.js'
+import { loadCandidateProfiles } from '../profiles/config.js'
 import { buildEsnDiscoveryOffers, buildWebDiscoveryOffers, discoverContactsForOffer, discoverEsnRecruiterContacts, discoverWebRecruiterContacts, isValidContactEmail, normalizeEmail } from './contactDiscovery.js'
 import {
   getAllApplicationContacts,
@@ -16,6 +17,8 @@ import {
   applicationRecipient,
   applicationSendWindow,
   buildApplicationContext,
+  buildApplicationContextFromProfile,
+  buildApplicationSmtpEnv,
   buildAttemptId,
   buildBounceAddress,
   isHardSmtpFailure,
@@ -46,8 +49,9 @@ export async function sendDailySpontaneousApplications({
 } = {}) {
   if (!db) throw new Error('Base de donnees manquante.')
 
-  const cvState = getCvState()
-  const context = buildApplicationContext(cvState)
+  const profiles = loadCandidateProfiles({ env })
+  const profile = profiles[0] || null
+  const context = profile ? buildApplicationContextFromProfile(profile) : buildApplicationContext(getCvState())
   const sendWindow = spontaneousSendWindow(now, env)
   const source = offers ? { startedAt, offers } : getApplicationCandidateOffers(db, { now })
   const since = new Date(now.getTime() - positiveInteger(env.APPLICATION_EMAIL_BLOCK_MONTHS, 12) * 31 * 24 * 60 * 60 * 1000).toISOString()
@@ -112,6 +116,7 @@ export async function sendDailySpontaneousApplications({
     const sentTo = applicationRecipient([target.email], env)
     const bounceAddress = buildBounceAddress(attemptId, env)
     const message = buildSpontaneousApplicationMessage({ context })
+    const sendEnv = buildApplicationSmtpEnv(context, env)
 
     try {
       const result = await mailer({
@@ -128,13 +133,14 @@ export async function sendDailySpontaneousApplications({
           envelope: { from: bounceAddress, to: Array.isArray(sentTo) ? sentTo : [sentTo] },
           dsn: { id: attemptId, return: 'headers', notify: ['failure', 'delay'], recipient: target.email },
         } : {}),
-      }, env)
+      }, sendEnv)
 
       const row = buildSpontaneousLog({
         now,
         sentAt,
         target,
         status: 'sent_pending_delivery',
+        profilePseudo: context.profilePseudo,
         messageId: result?.messageId || '',
         attemptId,
         sentTo,
@@ -156,6 +162,7 @@ export async function sendDailySpontaneousApplications({
         sentAt,
         target,
         status,
+        profilePseudo: context.profilePseudo,
         error: error.message,
         attemptId,
         sentTo,
@@ -271,6 +278,7 @@ function buildSpontaneousLog({
   sentAt = now.toISOString(),
   target,
   status,
+  profilePseudo = '',
   reason = '',
   error = '',
   messageId = '',
@@ -282,6 +290,7 @@ function buildSpontaneousLog({
 }) {
   return {
     sentAt,
+    profilePseudo,
     actionType: SPONTANEOUS_APPLICATION,
     offerKey: target?.offerKey || 'spontaneous_application',
     offerId: '',

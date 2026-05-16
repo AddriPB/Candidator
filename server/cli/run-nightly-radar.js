@@ -1,10 +1,13 @@
 import 'dotenv/config'
+import { exitIfBotPaused } from '../runtime/pause.js'
 import { sendDailyApplicationEmails } from '../applications/emailer.js'
 import { hasQuotaReachedLog } from '../radar/collector.js'
 import { loadRadarConfig } from '../radar/config.js'
 import { nightlyRunSucceeded, readNightlyState, recordNightlyAttempt, shouldRunNightlyRadar, writeNightlyState } from '../radar/nightlySchedule.js'
 import { runDailyRadar } from '../radar/pipeline.js'
 import { openDatabase } from '../storage/database.js'
+
+exitIfBotPaused()
 
 const config = loadRadarConfig()
 const schedule = config.daily_run_schedule

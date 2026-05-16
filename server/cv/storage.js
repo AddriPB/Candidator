@@ -9,13 +9,14 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const TITLE_PLACEHOLDER = '[Intitulé du poste]'
 
-export function getCvState() {
-  const dir = userCvDir()
+export function getCvState({ pseudo } = {}) {
+  const resolvedPseudo = cvPseudo(pseudo)
+  const dir = userCvDir(resolvedPseudo)
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   const files = listCvFiles(dir)
   const activeFile = readActiveFile(dir, files)
   return {
-    pseudo: cvPseudo(),
+    pseudo: resolvedPseudo,
     storageDir: dir,
     activeFile,
     files,
@@ -23,39 +24,42 @@ export function getCvState() {
   }
 }
 
-export function saveCvUpload({ originalName, buffer }) {
+export function saveCvUpload({ originalName, buffer, pseudo = '' }) {
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) throw httpError(400, 'empty_file')
   if (buffer.length > MAX_FILE_SIZE) throw httpError(413, 'file_too_large')
 
-  const dir = userCvDir()
+  const resolvedPseudo = cvPseudo(pseudo)
+  const dir = userCvDir(resolvedPseudo)
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
 
   const fileName = availableFileName(dir, originalName)
   const filePath = path.join(dir, fileName)
   fs.writeFileSync(filePath, buffer, { mode: 0o600 })
   writeActiveFile(dir, fileName)
-  return getCvState()
+  return getCvState({ pseudo: resolvedPseudo })
 }
 
-export function setActiveCv(fileName) {
-  const dir = userCvDir()
+export function setActiveCv(fileName, { pseudo = '' } = {}) {
+  const resolvedPseudo = cvPseudo(pseudo)
+  const dir = userCvDir(resolvedPseudo)
   const safeName = sanitizeExistingFileName(fileName)
   const filePath = path.join(dir, safeName)
   if (!fs.existsSync(filePath)) throw httpError(404, 'cv_not_found')
   writeActiveFile(dir, safeName)
-  return getCvState()
+  return getCvState({ pseudo: resolvedPseudo })
 }
 
-export function cvDownloadPath(fileName) {
-  const dir = userCvDir()
+export function cvDownloadPath(fileName, { pseudo = '' } = {}) {
+  const dir = userCvDir(cvPseudo(pseudo))
   const safeName = sanitizeExistingFileName(fileName)
   const filePath = path.join(dir, safeName)
   if (!fs.existsSync(filePath)) throw httpError(404, 'cv_not_found')
   return { filePath, fileName: safeName }
 }
 
-export function saveApplicationMailTemplate(input = {}) {
-  const dir = userCvDir()
+export function saveApplicationMailTemplate(input = {}, { pseudo = '' } = {}) {
+  const resolvedPseudo = cvPseudo(pseudo)
+  const dir = userCvDir(resolvedPseudo)
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   const applicationMail = normalizeApplicationMail(input)
   fs.writeFileSync(
@@ -63,15 +67,15 @@ export function saveApplicationMailTemplate(input = {}) {
     `${JSON.stringify(applicationMail, null, 2)}\n`,
     { mode: 0o600 },
   )
-  return getCvState()
+  return getCvState({ pseudo: resolvedPseudo })
 }
 
-export function cvPseudo() {
-  return sanitizeSegment(process.env.CV_USER_PSEUDO || process.env.AUTH_USERNAME || 'adri')
+export function cvPseudo(value = '') {
+  return sanitizeSegment(value || process.env.CV_USER_PSEUDO || process.env.AUTH_USERNAME || 'adri')
 }
 
-function userCvDir() {
-  return path.join(cvRootDir(), cvPseudo())
+function userCvDir(pseudo = '') {
+  return path.join(cvRootDir(), cvPseudo(pseudo))
 }
 
 function cvRootDir() {
@@ -108,9 +112,9 @@ function readActiveFile(dir, files) {
 
 function readApplicationMail(dir) {
   try {
-    return normalizeApplicationMail(JSON.parse(fs.readFileSync(path.join(dir, APPLICATION_MAIL_FILE), 'utf8')))
+    return { ...normalizeApplicationMail(JSON.parse(fs.readFileSync(path.join(dir, APPLICATION_MAIL_FILE), 'utf8'))), configured: true }
   } catch {
-    return normalizeApplicationMail({})
+    return { ...normalizeApplicationMail({}), configured: false }
   }
 }
 

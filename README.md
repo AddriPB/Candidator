@@ -57,6 +57,8 @@ Copier `.env.example` vers `.env` sur le Pi et renseigner les valeurs privées :
 - `DATABASE_PATH`
 - `RADAR_OUTPUT_DIR`
 - `OPPORTUNITY_RADAR_CONFIG`
+- `CANDIDATE_PROFILES_CONFIG` : chemin optionnel vers la configuration locale
+  multi-profils, par défaut `./config/candidate-profiles.local.json`
 - `CORS_ORIGINS` : origine(s) front autorisée(s), par exemple
   `https://addripb.github.io`
 - `AUTH_COOKIE_SAMESITE` : utiliser `None` si le front GitHub Pages appelle
@@ -66,10 +68,10 @@ Copier `.env.example` vers `.env` sur le Pi et renseigner les valeurs privées :
 - `APPLICATION_EMAIL_MAX_CONTACTS_PER_OFFER` : 3 par défaut
 - `APPLICATION_EMAIL_PER_OFFER_DAILY_LIMIT` : 1 par défaut
 - `APPLICATION_EMAIL_DAILY_LIMIT` : 20 par défaut
-- `APPLICATION_EMAIL_DELIVERY_MODE` : `test` par défaut. En mode `test`,
-  aucun mail ne part sans `APPLICATION_EMAIL_REDIRECT_TO` explicite.
+- `APPLICATION_EMAIL_DELIVERY_MODE` : `live` par défaut. En mode `live`,
+  les mails partent vers les adresses recruteurs découvertes.
 - `APPLICATION_EMAIL_REDIRECT_TO` : destinataire de redirection uniquement pour
-  les tests d'envoi.
+  les tests d'envoi avec `APPLICATION_EMAIL_DELIVERY_MODE=test`.
 - `APPLICATION_EMAIL_SEND_TIMEZONE` : `Europe/Paris` par défaut
 - `APPLICATION_EMAIL_SEND_START_HOUR` : 8 par défaut
 - `APPLICATION_EMAIL_SEND_END_HOUR` : 21 par défaut
@@ -96,7 +98,7 @@ Le pipeline quotidien :
 
 1. appelle les sources actives configurées ;
 2. lance les recherches PO / PM / BA / Proxy PO / chef de projet digital /
-   AMOA / MOA ;
+   AMOA / MOA et métiers funéraires ;
 3. normalise les offres ;
 4. déduplique par lien, id source, puis hash stable ;
 5. filtre les offres hors cible ;
@@ -112,6 +114,56 @@ en même temps. C'est volontaire pour limiter les pics de requêtes, réduire le
 risque de `429 Too Many Requests` et garder des logs lisibles par source.
 
 ## Candidatures, spontanées et rebonds
+
+### Profils candidats
+
+Sans fichier multi-profils local, le bot conserve le fonctionnement historique :
+un pseudo `CV_USER_PSEUDO`/`AUTH_USERNAME`, un CV actif et un template stockés
+via l'écran CV.
+
+Le mode multi-profils s'active avec un fichier local non versionné, par exemple
+`config/candidate-profiles.local.json`, sur le modèle de
+`config/candidate-profiles.example.json`. Un seul bot tourne, mais chaque offre
+est rattachée automatiquement au profil dont les mots-clés métier correspondent
+le mieux à l'intitulé et à la description.
+
+Chaque profil peut définir `pseudo`, `label`, `firstName`, `lastName`, `phone`,
+`emailFrom`, `smtpPrefix`, `cvPath`, `targetRoles`, `excludedRoles`, `dailyQuota` et
+`template.subject`/`template.body`.
+
+Si `smtpPrefix` est renseigné, le profil utilise les variables SMTP préfixées
+correspondantes. Par exemple `"smtpPrefix": "SECOND"` active
+`SECOND_SMTP_HOST`, `SECOND_SMTP_PORT`, `SECOND_SMTP_SECURE`,
+`SECOND_SMTP_USER`, `SECOND_SMTP_PASSWORD` et `SECOND_MAIL_FROM`. Sans
+`smtpPrefix`, le profil utilise le SMTP global `SMTP_*`/`APPLICATION_FROM`.
+
+Deux familles sont prévues par l'exemple :
+
+- profil produit : Product Owner, Business Analyst, chef de projet MOA/AMOA ;
+- profil funéraire : conseiller funéraire, assistant funéraire et métiers
+  funéraires similaires, avec exclusion explicite de maître de cérémonie,
+  porteur et chauffeur.
+
+Une candidature est bloquée et loggée si le profil choisi n'a pas de prénom, pas
+de nom, pas de CV configuré ou si le fichier CV est introuvable. Les historiques
+d'envoi incluent `profilePseudo` afin de séparer les logs par profil. Les quotas
+journaliers s'appliquent globalement et par profil.
+
+L'écran CV permet de sélectionner un profil, d'importer un CV dans son dossier
+local dédié (`cv/<pseudo>`), de choisir le CV actif et de sauvegarder prénom,
+nom et téléphone séparément par profil. Ces valeurs locales sont prioritaires
+sur `cvPath`/identité du fichier JSON; le JSON reste un fallback utile au
+démarrage.
+
+Organisation locale recommandée :
+
+```text
+config/candidate-profiles.local.json
+cv/produit/CV-produit.pdf
+cv/funeraire/CV-funeraire.pdf
+data/
+logs/
+```
 
 Les emails recruteurs sont cherchés dans les champs des offres, les liens de
 candidature, les pages publiques de recrutement, puis par adresses génériques
@@ -145,6 +197,12 @@ adresses maximum par offre, 1 nouvel envoi par offre par jour et un quota
 quotidien live configurable. Les envois sur offre sont bloqués hors fenêtre
 08:00-20:59 Europe/Paris par défaut, même si un cron appelle le script plus tôt
 ou plus tard.
+
+Le mail sur offre est généré par règles et blocs préécrits, sans API IA payante
+ni LLM local. L'angle court varie selon le métier détecté : PO, BA, chef de
+projet MOA/AMOA, delivery, discovery, funéraire ou transverse. Le mail inclut
+l'intitulé, l'URL de l'offre quand elle existe, le CV du profil choisi et le
+template du profil si un template local est configuré.
 
 L'envoi spontané réutilise la découverte de contacts existante, mais le mail a
 toujours l'objet `Candidature spontanée` et ne contient aucune URL d'offre. Le
@@ -215,7 +273,22 @@ npm run radar:test
 La page GitHub Pages est publique. Elle doit être construite avec
 `VITE_PUBLIC_API_BASE` si le backend est servi depuis une URL HTTPS séparée.
 
-Le fichier `.env` complet reste sur le Pi et n'est pas publié sur GitHub.
+Le fichier `.env` complet reste sur le Pi et n'est pas publié sur GitHub. Le
+fichier `config/candidate-profiles.local.json`, les CV et les données runtime
+restent également locaux.
+
+Le runtime Pi existant utilise PM2 pour l'API/front et cron pour les jobs. Après
+déploiement, conserver :
+
+```bash
+pm2 restart opportunity-radar --update-env
+pm2 save
+pm2 startup
+```
+
+`pm2 save` et `pm2 startup` assurent la reprise après reboot ou coupure
+électrique. PM2 redémarre aussi le process API en cas de crash ; les scripts cron
+reprennent naturellement après coupure réseau temporaire.
 
 ## Règles
 

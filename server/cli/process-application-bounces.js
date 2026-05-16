@@ -1,10 +1,13 @@
 import 'dotenv/config'
+import { exitIfBotPaused } from '../runtime/pause.js'
 import {
   fetchBounceMessagesFromImap,
   processApplicationBounces,
   readBounceMessagesFromDirectory,
 } from '../applications/bounces.js'
 import { openDatabase } from '../storage/database.js'
+
+exitIfBotPaused()
 
 const db = openDatabase()
 

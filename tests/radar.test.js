@@ -9,7 +9,8 @@ import { evaluateOffer } from '../server/radar/filter.js'
 import { normalizeOffer } from '../server/radar/normalizer.js'
 import { scoreOffer } from '../server/radar/scorer.js'
 import { loginHandler, requireAuth } from '../server/auth/index.js'
-import { buildApplicationMessage, sendDailyApplicationEmails } from '../server/applications/emailer.js'
+import { buildApplicationContextFromProfile, buildApplicationMessage, sendDailyApplicationEmails } from '../server/applications/emailer.js'
+import { classifyApplicationType } from '../server/applications/templates.js'
 import { buildSpontaneousApplicationMessage, sendDailySpontaneousApplications } from '../server/applications/spontaneous.js'
 import { buildEsnDiscoveryOffers, buildWebDiscoveryOffers, discoverContactsForOffer, discoverEsnRecruiterContacts, discoverWebRecruiterContacts, extractMailtoEmails, inferRecruiterLocals } from '../server/applications/contactDiscovery.js'
 import { processApplicationBounces } from '../server/applications/bounces.js'
@@ -17,6 +18,7 @@ import { cvPseudo, getCvState, saveApplicationMailTemplate, saveCvUpload, setAct
 import { getAllApplicationContacts, getApplicationContacts, getApplicationEmailEligibleOffers, getLatestRadarOffers, openDatabase, saveRadarRun, saveSourceCheckLogs } from '../server/storage/database.js'
 import { nightlyRunSucceeded, recordNightlyAttempt, shouldRunNightlyRadar } from '../server/radar/nightlySchedule.js'
 import { isQuotaReachedError, QUOTA_REACHED_CODE } from '../server/radar/adapters/jsearch.js'
+import { loadCandidateProfiles, selectCandidateProfile } from '../server/profiles/config.js'
 
 const baseConfig = {
   contrat: 'CDI',
@@ -55,8 +57,8 @@ test('filtrage rôle: accepte un rôle PO clair', () => {
   assert.equal(evaluation.status, 'compatible')
 })
 
-test('filtrage rôle: accepte les sigles PO PM BA MOA AMOA', () => {
-  for (const title of ['PO confirmé', 'PM senior', 'BA assurance', 'Consultant MOA', 'AMOA finance']) {
+test('filtrage rôle: accepte les sigles et intitulés cibles sans abréviation PM isolée', () => {
+  for (const title of ['PO confirmé', 'Product Manager senior', 'BA assurance', 'Consultant MOA', 'Chef de projet AMOA finance']) {
     const evaluation = evaluateOffer(offer({ title }), baseConfig)
     assert.equal(evaluation.role.status, 'clear', title)
   }
@@ -76,7 +78,7 @@ test('filtrage rôle: rejette un développeur IA pur', () => {
   assert.equal(evaluation.status, 'à rejeter')
 })
 
-test('filtrage rôle: conserve un poste cible même avec vocabulaire développement', () => {
+test('filtrage rôle: rejette un rôle cible seulement présent dans la description', () => {
   const candidate = offer({
     title: 'Développeur logiciel - équipe produit',
     description: 'CDI Paris hybride. Poste recherché Product Owner senior pour piloter le backlog et coordonner le développement.',
@@ -84,10 +86,27 @@ test('filtrage rôle: conserve un poste cible même avec vocabulaire développem
   const evaluation = evaluateOffer(candidate, baseConfig)
   const scoring = scoreOffer(candidate, evaluation, baseConfig)
 
-  assert.equal(evaluation.role.status, 'ambiguous')
-  assert.equal(evaluation.status, 'à vérifier')
-  assert.equal(scoring.verdict, 'à candidater')
-  assert.ok(!evaluation.rejectReasons.includes('hors rôle'))
+  assert.equal(evaluation.role.status, 'reject')
+  assert.equal(evaluation.status, 'à rejeter')
+  assert.equal(scoring.verdict, 'à rejeter')
+  assert.ok(evaluation.rejectReasons.includes('hors rôle'))
+})
+
+test('filtrage rôle: rejette les faux positifs PM et métiers hors cible', () => {
+  for (const title of [
+    'Chef du service juridique H/F',
+    'Charge Prevention Risques Professionnels',
+    'gardien police municipale pm H/F',
+    'Contract Manager - Maitrise d\'Ouvrage F/H',
+  ]) {
+    const evaluation = evaluateOffer(offer({
+      title,
+      description: 'CDI Paris hybride. Description agrégée mentionnant Product Owner, PM, BA ou MOA.',
+    }), baseConfig)
+
+    assert.equal(evaluation.role.status, 'reject', title)
+    assert.ok(evaluation.rejectReasons.includes('hors rôle'), title)
+  }
 })
 
 test('filtrage CDI: rejette un CDD', () => {
@@ -321,7 +340,7 @@ test('stockage JSON: liste les offres avec email publiees depuis moins de 12 moi
   assert.deepEqual(result.offers.map((item) => item.id).sort(), ['recent-apply', 'recent-watch'])
 })
 
-test('stockage SQLite: importe le store JSON existant au premier demarrage', () => {
+test('stockage SQLite: importe le store JSON existant si le binaire SQLite est disponible', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-sqlite-'))
   const previousDatabasePath = process.env.DATABASE_PATH
   const sqlitePath = path.join(dir, 'store.sqlite')
@@ -348,11 +367,10 @@ test('stockage SQLite: importe le store JSON existant au premier demarrage', () 
   try {
     process.env.DATABASE_PATH = sqlitePath
     const db = openDatabase()
-    assert.equal(db.kind, 'sqlite')
     const contacts = getAllApplicationContacts(db)
     assert.equal(contacts.length, 1)
     assert.equal(contacts[0].email, 'rh@example-esn.fr')
-    db.db.close()
+    if (db.kind === 'sqlite') db.db.close()
   } finally {
     if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH
     else process.env.DATABASE_PATH = previousDatabasePath
@@ -629,6 +647,39 @@ test('cv: stocke le mail de candidature dans le dossier du pseudo', () => {
     assert.equal(state.applicationMail.subjectTemplate, 'Candidature : [Intitulé du poste]')
     assert.ok(fs.existsSync(path.join(state.storageDir, '.application-mail.json')))
     assert.equal(getCvState().applicationMail.bodyTemplate.includes('[Intitulé du poste]'), true)
+  })
+})
+
+test('cv: separe les imports et identites par profil', () => {
+  withCvEnv(() => {
+    const produit = saveCvUpload({
+      pseudo: 'produit',
+      originalName: 'CV-produit.pdf',
+      buffer: Buffer.from('%PDF produit'),
+    })
+    const funeraire = saveCvUpload({
+      pseudo: 'funeraire',
+      originalName: 'CV-funeraire.pdf',
+      buffer: Buffer.from('%PDF funeraire'),
+    })
+
+    saveApplicationMailTemplate({
+      firstName: 'Adrien',
+      lastName: 'Produit',
+      phone: '0600000001',
+    }, { pseudo: 'produit' })
+    saveApplicationMailTemplate({
+      firstName: 'Adrien',
+      lastName: 'Funeraire',
+      phone: '0600000002',
+    }, { pseudo: 'funeraire' })
+
+    assert.equal(produit.storageDir.endsWith(path.join('cv', 'produit')), true)
+    assert.equal(funeraire.storageDir.endsWith(path.join('cv', 'funeraire')), true)
+    assert.equal(getCvState({ pseudo: 'produit' }).activeFile, 'CV-produit.pdf')
+    assert.equal(getCvState({ pseudo: 'funeraire' }).activeFile, 'CV-funeraire.pdf')
+    assert.equal(getCvState({ pseudo: 'produit' }).applicationMail.phone, '0600000001')
+    assert.equal(getCvState({ pseudo: 'funeraire' }).applicationMail.phone, '0600000002')
   })
 })
 
@@ -1387,6 +1438,138 @@ test('candidatures spontanees: ne renvoie pas a un email deja envoye', async () 
   })
 })
 
+test('profils candidats: choisit le profil selon le metier et respecte les exclusions', () => {
+  withProfilesEnv((configPath) => {
+    const profiles = loadCandidateProfiles({ configPath })
+
+    assert.equal(selectCandidateProfile(offer({ title: 'Business Analyst Assurance' }), profiles).pseudo, 'produit')
+    assert.equal(selectCandidateProfile(offer({ title: 'Conseiller funéraire H/F', description: 'Pompes funèbres.' }), profiles).pseudo, 'funeraire')
+    assert.equal(selectCandidateProfile(offer({ title: 'Maître de cérémonie funéraire H/F' }), profiles), null)
+  })
+})
+
+test('profils candidats: bloque un profil incomplet avant envoi', async () => {
+  await withProfilesEnv(async (configPath) => {
+    const db = jsonDb({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [], applicationContacts: [] })
+    const sent = []
+    const summary = await sendDailyApplicationEmails({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: {
+        APPLICATION_EMAIL_DELIVERY_MODE: 'live',
+        CANDIDATE_PROFILES_CONFIG: configPath,
+        SMTP_USER: 'produit-smtp@example.test',
+        SMTP_PASSWORD: 'produit-password',
+        SECOND_SMTP_HOST: 'smtp.second.example.test',
+        SECOND_SMTP_PORT: '587',
+        SECOND_SMTP_SECURE: 'false',
+        SECOND_SMTP_USER: 'funeraire-smtp@example.test',
+        SECOND_SMTP_PASSWORD: 'funeraire-password',
+        SECOND_MAIL_FROM: 'Funeraire <funeraire@example.test>',
+      },
+      mailer: async (message) => {
+        sent.push(message)
+        return { messageId: 'message-1' }
+      },
+      logger: silentLogger(),
+      offers: [
+        offer({ id: 'funeral:missing-cv', title: 'Conseiller funéraire H/F', company: 'Pompes Funèbres Exemple', emails: ['rh@funeraire.example'] }),
+      ],
+    })
+
+    assert.equal(summary.sent, 0)
+    assert.equal(summary.skipped, 1)
+    assert.equal(sent.length, 0)
+    assert.match(summary.results[0].reason, /CV introuvable/)
+    assert.equal(summary.results[0].profilePseudo, 'funeraire')
+  }, { missingFuneralCv: true })
+})
+
+test('profils candidats: envoie avec le CV, le from et le template du profil choisi', async () => {
+  await withProfilesEnv(async (configPath) => {
+    const db = jsonDb({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [], applicationContacts: [] })
+    const sent = []
+    const envs = []
+    const summary = await sendDailyApplicationEmails({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: {
+        APPLICATION_EMAIL_DELIVERY_MODE: 'live',
+        CANDIDATE_PROFILES_CONFIG: configPath,
+        SMTP_USER: 'produit-smtp@example.test',
+        SMTP_PASSWORD: 'produit-password',
+        SECOND_SMTP_HOST: 'smtp.second.example.test',
+        SECOND_SMTP_PORT: '587',
+        SECOND_SMTP_SECURE: 'false',
+        SECOND_SMTP_USER: 'funeraire-smtp@example.test',
+        SECOND_SMTP_PASSWORD: 'funeraire-password',
+        SECOND_MAIL_FROM: 'Funeraire <funeraire@example.test>',
+      },
+      mailer: async (message, env) => {
+        sent.push(message)
+        envs.push(env)
+        return { messageId: 'message-1' }
+      },
+      logger: silentLogger(),
+      offers: [
+        offer({ id: 'funeral:1', title: 'Assistant funéraire H/F', company: 'Pompes Funèbres Exemple', emails: ['rh@funeraire.example'] }),
+      ],
+    })
+
+    assert.equal(summary.sent, 1)
+    assert.equal(summary.results[0].profilePseudo, 'funeraire')
+    assert.equal(sent[0].attachments[0].filename, 'CV-funeraire.pdf')
+    assert.equal(envs[0].APPLICATION_FROM, 'Funeraire <funeraire@example.test>')
+    assert.equal(envs[0].SMTP_HOST, 'smtp.second.example.test')
+    assert.equal(envs[0].SMTP_USER, 'funeraire-smtp@example.test')
+    assert.equal(envs[0].SMTP_PASSWORD, 'funeraire-password')
+    assert.match(sent[0].text, /posture sérieuse/)
+    assert.match(sent[0].text, /Assistant funéraire H\/F/)
+  })
+})
+
+test('profils candidats: utilise le CV actif et l identite stockes par profil', () => {
+  withCvEnv(() => {
+    const uploaded = saveCvUpload({
+      pseudo: 'funeraire',
+      originalName: 'CV-ui-funeraire.pdf',
+      buffer: Buffer.from('%PDF ui funeraire'),
+    })
+    saveApplicationMailTemplate({
+      firstName: 'UI',
+      lastName: 'Funeraire',
+      phone: '0600000003',
+    }, { pseudo: 'funeraire' })
+
+    const context = buildApplicationContextFromProfile({
+      pseudo: 'funeraire',
+      firstName: 'Config',
+      lastName: 'Config',
+      phone: '0600000000',
+      emailFrom: 'funeraire@example.test',
+      cvPath: '/tmp/cv-config-missing.pdf',
+      targetRoles: ['funeraire'],
+      excludedRoles: [],
+      dailyQuota: 1,
+    })
+
+    assert.equal(context.ready, true)
+    assert.equal(context.cvFileName, 'CV-ui-funeraire.pdf')
+    assert.equal(context.cvPath, path.join(uploaded.storageDir, 'CV-ui-funeraire.pdf'))
+    assert.equal(context.applicationMail.firstName, 'UI')
+    assert.equal(context.applicationMail.lastName, 'Funeraire')
+    assert.equal(context.applicationMail.phone, '0600000003')
+  })
+})
+
+test('templates dynamiques: classe les angles PO BA MOA funeraire et transverse', () => {
+  assert.equal(classifyApplicationType(offer({ title: 'Product Owner H/F' })).type, 'po')
+  assert.equal(classifyApplicationType(offer({ title: 'Business Analyst H/F' })).type, 'ba')
+  assert.equal(classifyApplicationType(offer({ title: 'Chef de projet MOA H/F' })).type, 'moa')
+  assert.equal(classifyApplicationType(offer({ title: 'Conseiller funéraire H/F' })).type, 'funeral')
+  assert.equal(classifyApplicationType(offer({ title: 'Coordinateur projet H/F' })).type, 'transverse')
+})
+
 function makeJsonStore(data) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-'))
   const jsonPath = path.join(dir, 'store.json')
@@ -1464,6 +1647,58 @@ function withCvEnv(fn) {
   }
   try {
     const result = fn()
+    if (result && typeof result.then === 'function') return result.finally(cleanup)
+    cleanup()
+    return result
+  } catch (error) {
+    cleanup()
+    throw error
+  }
+}
+
+function withProfilesEnv(fn, { missingFuneralCv = false } = {}) {
+  const previous = {
+    CANDIDATE_PROFILES_CONFIG: process.env.CANDIDATE_PROFILES_CONFIG,
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-profiles-'))
+  const produitCv = path.join(dir, 'CV-produit.pdf')
+  const funeralCv = path.join(dir, 'CV-funeraire.pdf')
+  fs.writeFileSync(produitCv, '%PDF-1.4 produit')
+  if (!missingFuneralCv) fs.writeFileSync(funeralCv, '%PDF-1.4 funeraire')
+  const configPath = path.join(dir, 'profiles.json')
+  fs.writeFileSync(configPath, `${JSON.stringify({
+    profiles: [
+      {
+        pseudo: 'produit',
+        firstName: 'Adrien',
+        lastName: 'Produit',
+        emailFrom: 'produit@example.test',
+        cvPath: produitCv,
+        targetRoles: ['product owner', 'business analyst', 'chef de projet moa', 'consultant amoa', 'consultant moa'],
+        excludedRoles: [],
+        dailyQuota: 2,
+      },
+      {
+        pseudo: 'funeraire',
+        firstName: 'Adrien',
+        lastName: 'Funeraire',
+        emailFrom: 'funeraire@example.test',
+        smtpPrefix: 'SECOND',
+        cvPath: funeralCv,
+        targetRoles: ['conseiller funeraire', 'assistant funeraire', 'funeraire', 'pompes funebres'],
+        excludedRoles: ['maitre de ceremonie', 'porteur', 'chauffeur'],
+        dailyQuota: 2,
+      },
+    ],
+  }, null, 2)}\n`)
+  process.env.CANDIDATE_PROFILES_CONFIG = configPath
+  const cleanup = () => {
+    if (previous.CANDIDATE_PROFILES_CONFIG === undefined) delete process.env.CANDIDATE_PROFILES_CONFIG
+    else process.env.CANDIDATE_PROFILES_CONFIG = previous.CANDIDATE_PROFILES_CONFIG
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+  try {
+    const result = fn(configPath)
     if (result && typeof result.then === 'function') return result.finally(cleanup)
     cleanup()
     return result

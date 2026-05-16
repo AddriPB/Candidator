@@ -12,4 +12,7 @@ export const TARGET_QUERIES = [
   'AMOA',
   'Consultant MOA',
   'MOA',
+  'Conseiller funéraire',
+  'Assistant funéraire',
+  'Métiers funéraires',
 ]

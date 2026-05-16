@@ -7,6 +7,7 @@ import { getAuthDiagnostics, loginHandler, logoutHandler, meHandler, requireAuth
 import { checkSources } from './connectors/sourceChecks.js'
 import { cvDownloadPath, getCvState, saveApplicationMailTemplate, saveCvUpload, setActiveCv } from './cv/storage.js'
 import { assertSmtpConfig } from './email/smtp.js'
+import { loadCandidateProfiles, profilePublicSummary } from './profiles/config.js'
 import { getApplicationEmailEligibleOffers, getApplicationEmailSends, getLatestApplicationCandidateOffers, getLatestSourceChecks, getOfferEmailStats, openDatabase, pruneOldData, saveSourceCheckLogs } from './storage/database.js'
 import { stableHash } from './radar/hash.js'
 
@@ -67,8 +68,21 @@ app.get('/api/offers', requireAuth, (_req, res) => {
   res.json(getOffersScreenState(db))
 })
 
+app.get('/api/profiles', requireAuth, (_req, res) => {
+  const profiles = loadCandidateProfiles()
+  const cv = getCvState()
+  res.json({
+    mode: profiles.length ? 'multi' : 'legacy',
+    active: profiles.length
+      ? { pseudo: 'auto', label: `${profiles.length} profils auto` }
+      : { pseudo: cv.pseudo, label: cv.pseudo },
+    profiles: profiles.map(profilePublicSummary),
+  })
+})
+
 app.get('/api/test/healthcheck', requireAuth, (_req, res) => {
   const cv = getCvState()
+  const profiles = loadCandidateProfiles()
   const smtp = smtpHealth()
   const stats = getOfferEmailStats(db)
   const eligible = getApplicationEmailEligibleOffers(db)
@@ -99,7 +113,7 @@ app.get('/api/test/healthcheck', requireAuth, (_req, res) => {
     },
     applications: {
       dailyEnabled: process.env.APPLICATION_EMAIL_DAILY_ENABLED !== 'false',
-      deliveryMode: process.env.APPLICATION_EMAIL_DELIVERY_MODE || 'test',
+      deliveryMode: process.env.APPLICATION_EMAIL_DELIVERY_MODE || 'live',
       redirectTo: process.env.APPLICATION_EMAIL_REDIRECT_TO || '',
       blockMonths: Number(process.env.APPLICATION_EMAIL_BLOCK_MONTHS || 12),
       offerMaxMonths: Number(process.env.APPLICATION_EMAIL_OFFER_MAX_MONTHS || 12),
@@ -108,6 +122,11 @@ app.get('/api/test/healthcheck', requireAuth, (_req, res) => {
       eligibleToEmail: eligible.offers.length,
       latestRunAt: stats.latestRunAt,
       since: stats.since,
+    },
+    profiles: {
+      mode: profiles.length ? 'multi' : 'legacy',
+      count: profiles.length || 1,
+      active: profiles.length ? 'auto' : cv.pseudo,
     },
   })
 })
@@ -120,8 +139,8 @@ app.post('/api/test/application-email', requireAuth, async (req, res, next) => {
   }
 })
 
-app.get('/api/cv', requireAuth, (_req, res) => {
-  res.json(getCvState())
+app.get('/api/cv', requireAuth, (req, res) => {
+  res.json(getCvState({ pseudo: reqProfilePseudo(req) }))
 })
 
 app.post('/api/cv/upload', requireAuth, express.raw({
@@ -132,6 +151,7 @@ app.post('/api/cv/upload', requireAuth, express.raw({
     res.json(saveCvUpload({
       originalName: req.headers['x-file-name'],
       buffer: req.body,
+      pseudo: reqProfilePseudo(req),
     }))
   } catch (error) {
     next(error)
@@ -140,7 +160,7 @@ app.post('/api/cv/upload', requireAuth, express.raw({
 
 app.post('/api/cv/active', requireAuth, (req, res, next) => {
   try {
-    res.json(setActiveCv(req.body?.fileName))
+    res.json(setActiveCv(req.body?.fileName, { pseudo: reqProfilePseudo(req) }))
   } catch (error) {
     next(error)
   }
@@ -148,7 +168,7 @@ app.post('/api/cv/active', requireAuth, (req, res, next) => {
 
 app.post('/api/cv/application-mail', requireAuth, (req, res, next) => {
   try {
-    res.json(saveApplicationMailTemplate(req.body))
+    res.json(saveApplicationMailTemplate(req.body, { pseudo: reqProfilePseudo(req) }))
   } catch (error) {
     next(error)
   }
@@ -156,7 +176,7 @@ app.post('/api/cv/application-mail', requireAuth, (req, res, next) => {
 
 app.get('/api/cv/download/:fileName', requireAuth, (req, res, next) => {
   try {
-    const file = cvDownloadPath(req.params.fileName)
+    const file = cvDownloadPath(req.params.fileName, { pseudo: reqProfilePseudo(req) })
     res.download(file.filePath, file.fileName)
   } catch (error) {
     next(error)
@@ -180,6 +200,10 @@ app.use((error, _req, res, _next) => {
 
 function corsOrigins() {
   return String(process.env.CORS_ORIGINS || 'https://addripb.github.io').split(',').map((item) => item.trim()).filter(Boolean)
+}
+
+function reqProfilePseudo(req) {
+  return String(req.query?.profilePseudo || req.body?.profilePseudo || '').trim()
 }
 
 function smtpHealth() {

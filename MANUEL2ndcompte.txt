@@ -1,0 +1,307 @@
+MANUEL - Ajouter le second profil candidat local
+================================================
+
+Objectif
+--------
+
+Ajouter un second profil candidat pour les métiers funéraires, sans modifier le
+code et sans committer de secret.
+
+Ce profil sera utilisé automatiquement par le bot quand une offre correspond à :
+- conseiller funéraire
+- assistant funéraire
+- métiers funéraires similaires
+
+Le bot doit exclure automatiquement :
+- maître de cérémonie
+- porteur
+- chauffeur
+
+
+Étape 1 - Aller dans le dossier du projet sur le Pi
+---------------------------------------------------
+
+Commande :
+
+cd /home/adri/bots/opportunity-radar
+
+
+Étape 2 - Créer le fichier local de profils si absent
+-----------------------------------------------------
+
+Commande :
+
+cp config/candidate-profiles.example.json config/candidate-profiles.local.json
+
+Si le fichier existe déjà, ne pas écraser. Ouvre-le directement à l'étape 4.
+
+
+Étape 3 - Créer les dossiers CV par profil
+------------------------------------------
+
+Commandes :
+
+mkdir -p cv/produit
+mkdir -p cv/funeraire
+
+
+Étape 4 - Ajouter les CV dans les bons dossiers
+-----------------------------------------------
+
+Option recommandée : importer les CV depuis l'interface.
+
+Dans l'application :
+
+1. Ouvrir l'onglet CV.
+2. Choisir le profil dans le menu "Profil".
+3. Importer le CV du profil choisi.
+4. Vérifier que le dossier affiché correspond bien au profil.
+5. Renseigner prénom, nom et téléphone pour ce profil.
+6. Cliquer sur "Enregistrer le mail".
+
+L'application stocke alors automatiquement :
+
+cv/produit/
+cv/funeraire/
+
+Chaque profil a son CV actif, son prénom, son nom et son téléphone séparés.
+
+Option manuelle possible : déposer les fichiers CV ici :
+
+cv/produit/CV-produit.pdf
+cv/funeraire/CV-funeraire.pdf
+
+Les noms peuvent être changés. Si le CV est importé depuis l'interface, le bot
+utilise le CV actif du profil. Si aucun CV n'est actif dans l'interface, il
+utilise le chemin cvPath de config/candidate-profiles.local.json comme fallback.
+
+
+Étape 5 - Éditer la configuration des profils
+---------------------------------------------
+
+Commande :
+
+nano config/candidate-profiles.local.json
+
+À vérifier pour le profil produit :
+
+"pseudo": "produit"
+"firstName": "Prenom"
+"lastName": "Nom"
+"phone": "0600000000"
+"emailFrom": "prenom.nom@example.com"
+"smtpPrefix": ""
+"cvPath": "./cv/produit/CV-produit.pdf"
+
+À vérifier pour le profil funéraire :
+
+"pseudo": "funeraire"
+"firstName": "Prenom"
+"lastName": "Nom"
+"phone": "0600000000"
+"emailFrom": "Prénom Nom <adresse.second.profil@gmail.com>"
+"smtpPrefix": "SECOND"
+"cvPath": "./cv/funeraire/CV-funeraire.pdf"
+
+Important :
+- Remplacer les valeurs fictives par les vraies valeurs localement.
+- Ne jamais coller de mot de passe dans ce fichier.
+- Ne jamais committer ce fichier.
+- Le fichier config/candidate-profiles.local.json est ignoré par Git.
+- Le prénom, le nom et le téléphone peuvent ensuite être modifiés depuis
+  l'interface, séparément pour chaque profil.
+
+
+Étape 6 - Vérifier les métiers ciblés du second profil
+------------------------------------------------------
+
+Dans le profil "funeraire", vérifier que targetRoles contient au minimum :
+
+"conseiller funeraire"
+"conseiller funéraire"
+"assistant funeraire"
+"assistant funéraire"
+"metiers funeraires"
+"métiers funéraires"
+"pompes funebres"
+"pompes funèbres"
+
+Vérifier que excludedRoles contient au minimum :
+
+"maitre de ceremonie"
+"maître de cérémonie"
+"porteur"
+"chauffeur"
+
+
+Étape 7 - Vérifier que .env pointe vers la config locale
+--------------------------------------------------------
+
+Commande :
+
+grep CANDIDATE_PROFILES_CONFIG .env
+
+Résultat attendu possible :
+
+CANDIDATE_PROFILES_CONFIG=./config/candidate-profiles.local.json
+
+Si la ligne est absente, l'ajouter :
+
+nano .env
+
+Puis ajouter :
+
+CANDIDATE_PROFILES_CONFIG=./config/candidate-profiles.local.json
+
+
+Étape 8 - Préparer le compte Gmail du second profil
+---------------------------------------------------
+
+Le second profil utilise son propre SMTP si le profil contient :
+
+"smtpPrefix": "SECOND"
+
+Actions manuelles à faire dans le compte Gmail du second profil :
+
+1. Se connecter à adresse.second.profil@gmail.com.
+2. Vérifier que la validation en deux étapes est activée.
+3. Créer un mot de passe d'application Gmail.
+4. Copier le mot de passe d'application généré.
+
+Important :
+- Utiliser un mot de passe d'application, pas le mot de passe Gmail normal.
+- Le mot de passe Gmail généré peut contenir des espaces à l'affichage ; le code
+  les retire automatiquement, mais il est préférable de coller la valeur proprement.
+- Ne jamais committer le mot de passe dans Git.
+
+
+Étape 9 - Ajouter le SMTP du second profil dans .env
+----------------------------------------------------
+
+Commande :
+
+nano .env
+
+Ajouter ou compléter ce bloc avec les vraies valeurs :
+
+SECOND_SMTP_HOST=smtp.gmail.com
+SECOND_SMTP_PORT=587
+SECOND_SMTP_SECURE=false
+SECOND_SMTP_USER=adresse.second.profil@gmail.com
+SECOND_SMTP_PASSWORD=mot_de_passe_application_gmail
+SECOND_MAIL_FROM="Prénom Nom <adresse.second.profil@gmail.com>"
+
+Notes :
+- Le nom attendu principal est SECOND_SMTP_PASSWORD.
+- SECOND_SMTP_PASS est aussi accepté, mais SECOND_SMTP_PASSWORD est recommandé.
+- SECOND_MAIL_FROM doit correspondre à l'adresse du second compte Gmail.
+- Le profil produit continue d'utiliser SMTP_HOST, SMTP_PORT, SMTP_SECURE,
+  SMTP_USER, SMTP_PASSWORD et APPLICATION_FROM.
+- Le profil funéraire utilise SECOND_SMTP_* grâce à "smtpPrefix": "SECOND".
+
+
+Étape 10 - Redémarrer l'application
+----------------------------------
+
+Commandes :
+
+pm2 restart opportunity-radar --update-env
+pm2 save
+
+
+Étape 11 - Vérifier que l'API répond
+-----------------------------------
+
+Commande :
+
+curl -s http://127.0.0.1:4173/api/health && echo
+
+Résultat attendu :
+
+{"ok":true,"app":"Opportunity Radar",...}
+
+
+Étape 12 - Vérifier les logs PM2
+--------------------------------
+
+Commande :
+
+pm2 logs opportunity-radar --lines 30 --nostream
+
+À vérifier :
+- pas d'erreur JSON dans candidate-profiles.local.json
+- pas d'erreur de démarrage
+
+
+Étape 13 - Vérifier côté interface
+----------------------------------
+
+Ouvrir l'application.
+
+En haut à droite, près du titre, tu dois voir :
+
+sélection auto
+2 profils auto
+
+Cela signifie que le mode multi-profils est actif.
+
+Dans l'onglet CV :
+
+1. Sélectionner "Profil Produit".
+2. Vérifier le CV actif, le prénom, le nom et le téléphone produit.
+3. Sélectionner "Profil Funéraire".
+4. Vérifier le CV actif, le prénom, le nom et le téléphone funéraire.
+5. Importer un nouveau CV si besoin : il sera stocké uniquement dans le dossier
+   du profil sélectionné.
+
+
+Étape 14 - Points de sécurité avant reprise des envois
+------------------------------------------------------
+
+Avant de laisser les candidatures automatiques repartir :
+
+1. Vérifier que chaque profil a :
+   - firstName rempli
+   - lastName rempli
+   - cvPath correct
+   - CV réellement présent
+
+2. Vérifier que le profil funéraire exclut bien :
+   - maître de cérémonie
+   - porteur
+   - chauffeur
+
+3. Vérifier que l'adresse emailFrom de chaque profil est cohérente avec le SMTP.
+
+4. Vérifier que le profil funéraire a bien :
+   - "smtpPrefix": "SECOND"
+   - emailFrom avec l'adresse du second compte Gmail
+   - SECOND_SMTP_USER avec la même adresse Gmail dans .env
+   - SECOND_SMTP_PASSWORD renseigné avec le mot de passe d'application Gmail
+
+
+Commandes utiles
+----------------
+
+Voir les fichiers du profil funéraire :
+
+ls -la cv/funeraire
+
+Voir les fichiers du profil produit :
+
+ls -la cv/produit
+
+Tester que la config JSON est valide :
+
+node -e "JSON.parse(require('fs').readFileSync('config/candidate-profiles.local.json','utf8')); console.log('JSON OK')"
+
+Voir le statut PM2 :
+
+pm2 status
+
+
+Note importante
+---------------
+
+Le fichier config/candidate-profiles.local.json et les CV sont locaux au Pi.
+Ils ne doivent pas être poussés sur GitHub.

@@ -40,9 +40,11 @@ export default function App() {
   const [testEmailResult, setTestEmailResult] = useState(null)
   const [testEmailError, setTestEmailError] = useState('')
   const [cvState, setCvState] = useState(null)
+  const [profileState, setProfileState] = useState(null)
   const [cvLoading, setCvLoading] = useState(false)
   const [cvError, setCvError] = useState('')
   const [cvUploading, setCvUploading] = useState(false)
+  const [selectedCvProfile, setSelectedCvProfile] = useState('')
 
   const api = useMemo(() => createApi(API_BASE), [])
   const roleFilteredOffers = useMemo(
@@ -73,12 +75,13 @@ export default function App() {
   useEffect(() => {
     if (!authenticated) return
     loadOffers()
+    loadProfiles()
   }, [authenticated])
 
   useEffect(() => {
     if (!authenticated || view !== 'cv') return
     loadCv()
-  }, [authenticated, view])
+  }, [authenticated, view, selectedCvProfile])
 
   useEffect(() => {
     if (!authenticated || view !== 'test') return
@@ -118,6 +121,19 @@ export default function App() {
       setOffersError(apiErrorMessage(error, 'Impossible de charger les offres.'))
     } finally {
       setOffersLoading(false)
+    }
+  }
+
+  async function loadProfiles() {
+    try {
+      const data = await api('/api/profiles')
+      setProfileState(data)
+      if (data.mode === 'multi' && !selectedCvProfile) {
+        setSelectedCvProfile(data.profiles?.[0]?.pseudo || '')
+      }
+    } catch (error) {
+      if (handleAuthError(error)) return
+      setProfileState(null)
     }
   }
 
@@ -177,7 +193,7 @@ export default function App() {
     setCvLoading(true)
     setCvError('')
     try {
-      const data = await api('/api/cv')
+      const data = await api(`/api/cv${profileQuery(selectedCvProfile)}`)
       setCvState(data)
     } catch (error) {
       if (handleAuthError(error)) return
@@ -192,7 +208,7 @@ export default function App() {
     setCvUploading(true)
     setCvError('')
     try {
-      const data = await uploadFile(`${API_BASE}/api/cv/upload`, file)
+      const data = await uploadFile(`${API_BASE}/api/cv/upload${profileQuery(selectedCvProfile)}`, file)
       setCvState(data)
       setMessage('CV importé et défini comme actif.')
     } catch (error) {
@@ -209,7 +225,7 @@ export default function App() {
     try {
       const data = await api('/api/cv/active', {
         method: 'POST',
-        body: JSON.stringify({ fileName }),
+        body: JSON.stringify({ fileName, profilePseudo: selectedCvProfile }),
       })
       setCvState(data)
       setMessage('CV actif mis à jour.')
@@ -227,7 +243,7 @@ export default function App() {
     try {
       const data = await api('/api/cv/application-mail', {
         method: 'POST',
-        body: JSON.stringify(applicationMail),
+        body: JSON.stringify({ ...applicationMail, profilePseudo: selectedCvProfile }),
       })
       setCvState(data)
       setMessage('Texte de candidature mis à jour.')
@@ -259,7 +275,10 @@ export default function App() {
   return (
     <main className={authenticated ? 'app-shell' : 'page'}>
       <section className={authenticated ? 'app-panel' : 'panel'}>
-        <h1>Opportunity Radar</h1>
+        <div className="app-header">
+          <h1>Opportunity Radar</h1>
+          {authenticated && <ProfileBadge profileState={profileState} />}
+        </div>
 
         {!authenticated ? (
           <form className="stack" onSubmit={login}>
@@ -294,8 +313,11 @@ export default function App() {
                 cvLoading={cvLoading}
                 cvState={cvState}
                 cvUploading={cvUploading}
+                profileState={profileState}
+                selectedProfile={selectedCvProfile}
                 onRefresh={loadCv}
                 onSaveApplicationMail={saveCvApplicationMail}
+                onSelectProfile={setSelectedCvProfile}
                 onSetActive={setActiveCv}
                 onUpload={uploadCv}
               />
@@ -336,6 +358,18 @@ export default function App() {
         {message && <p className="message">{message}</p>}
       </section>
     </main>
+  )
+}
+
+function ProfileBadge({ profileState }) {
+  const active = profileState?.active
+  const label = active?.label || active?.pseudo || 'profil historique'
+  const mode = profileState?.mode === 'multi' ? 'sélection auto' : 'profil actif'
+  return (
+    <div className="profile-badge" title="Profil candidat utilisé pour les candidatures">
+      <span>{mode}</span>
+      <strong>{label}</strong>
+    </div>
   )
 }
 
@@ -553,9 +587,23 @@ function HealthCard({ title, ok, children }) {
   )
 }
 
-function CvScreen({ apiBase, cvError, cvLoading, cvState, cvUploading, onRefresh, onSaveApplicationMail, onSetActive, onUpload }) {
+function CvScreen({
+  apiBase,
+  cvError,
+  cvLoading,
+  cvState,
+  cvUploading,
+  profileState,
+  selectedProfile,
+  onRefresh,
+  onSaveApplicationMail,
+  onSelectProfile,
+  onSetActive,
+  onUpload,
+}) {
   const files = cvState?.files || []
   const activeFile = cvState?.activeFile || ''
+  const profiles = profileState?.mode === 'multi' ? profileState.profiles || [] : []
   const [applicationMail, setApplicationMail] = useState(defaultApplicationMail())
   const previewTitle = 'PO / Product Owner'
   const previewSubject = renderApplicationMailTemplate(applicationMail.subjectTemplate, previewTitle)
@@ -591,6 +639,18 @@ function CvScreen({ apiBase, cvError, cvLoading, cvState, cvUploading, onRefresh
   return (
     <div className="stack">
       <div className="toolbar cv-toolbar">
+        {profiles.length > 0 && (
+          <label>
+            Profil
+            <select value={selectedProfile} onChange={(event) => onSelectProfile(event.target.value)}>
+              {profiles.map((profile) => (
+                <option key={profile.pseudo} value={profile.pseudo}>
+                  {profile.label || profile.pseudo}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label>
           Importer un CV
           <input
@@ -708,7 +768,7 @@ function CvScreen({ apiBase, cvError, cvLoading, cvState, cvUploading, onRefresh
                     Rendre actif
                   </button>
                 )}
-                <a href={`${apiBase}/api/cv/download/${encodeURIComponent(file.name)}`} target="_blank" rel="noreferrer">
+                <a href={`${apiBase}/api/cv/download/${encodeURIComponent(file.name)}${profileQuery(selectedProfile)}`} target="_blank" rel="noreferrer">
                   Télécharger
                 </a>
               </div>
@@ -757,6 +817,11 @@ async function uploadFile(url, file) {
   const data = await readResponseBody(res)
   if (!res.ok) throw new ApiError('http', { status: res.status, statusText: res.statusText, data })
   return data
+}
+
+function profileQuery(profilePseudo) {
+  const value = String(profilePseudo || '').trim()
+  return value ? `?profilePseudo=${encodeURIComponent(value)}` : ''
 }
 
 function saveSessionToken(token) {

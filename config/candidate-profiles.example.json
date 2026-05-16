@@ -1,0 +1,58 @@
+{
+  "profiles": [
+    {
+      "pseudo": "produit",
+      "label": "Profil Produit",
+      "firstName": "Prenom",
+      "lastName": "Nom",
+      "phone": "0600000000",
+      "emailFrom": "prenom.nom@example.com",
+      "smtpPrefix": "",
+      "cvPath": "./cv/produit/CV-produit.pdf",
+      "targetRoles": [
+        "product owner",
+        "business analyst",
+        "chef de projet moa",
+        "consultant amoa",
+        "consultant moa"
+      ],
+      "excludedRoles": [],
+      "dailyQuota": 10,
+      "template": {
+        "subject": "Candidature : [Intitulé du poste]",
+        "body": "Bonjour,\n\nJe vous adresse ma candidature pour le poste de [Intitulé du poste].\n\nOffre concernée : [URL de l’offre]\n\n[Angle candidature]\n\nVous trouverez mon CV en pièce jointe.\n\nBien cordialement,\n[Prénom Nom]"
+      }
+    },
+    {
+      "pseudo": "funeraire",
+      "label": "Profil Funéraire",
+      "firstName": "Prenom",
+      "lastName": "Nom",
+      "phone": "0600000000",
+      "emailFrom": "prenom.nom@example.com",
+      "smtpPrefix": "SECOND",
+      "cvPath": "./cv/funeraire/CV-funeraire.pdf",
+      "targetRoles": [
+        "conseiller funeraire",
+        "conseiller funéraire",
+        "assistant funeraire",
+        "assistant funéraire",
+        "metiers funeraires",
+        "métiers funéraires",
+        "pompes funebres",
+        "pompes funèbres"
+      ],
+      "excludedRoles": [
+        "maitre de ceremonie",
+        "maître de cérémonie",
+        "porteur",
+        "chauffeur"
+      ],
+      "dailyQuota": 5,
+      "template": {
+        "subject": "Candidature : [Intitulé du poste]",
+        "body": "Bonjour,\n\nJe vous adresse ma candidature pour le poste de [Intitulé du poste].\n\nOffre concernée : [URL de l’offre]\n\n[Angle candidature]\n\nVous trouverez mon CV en pièce jointe.\n\nBien cordialement,\n[Prénom Nom]"
+      }
+    }
+  ]
+}

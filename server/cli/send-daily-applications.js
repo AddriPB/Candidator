@@ -1,6 +1,9 @@
 import 'dotenv/config'
+import { exitIfBotPaused } from '../runtime/pause.js'
 import { sendDailyApplicationEmails } from '../applications/emailer.js'
 import { openDatabase } from '../storage/database.js'
+
+exitIfBotPaused()
 
 const db = openDatabase()
 

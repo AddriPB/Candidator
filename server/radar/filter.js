@@ -9,15 +9,22 @@ const CLEAR_TARGET_ROLES = [
   'chef de projet digital',
   'consultant amoa',
   'consultant moa',
+  'conseiller funeraire',
+  'conseiller funéraire',
+  'assistant funeraire',
+  'assistant funéraire',
+  'assistante funeraire',
+  'assistante funéraire',
 ]
 
 const CLEAR_TARGET_ROLE_PATTERNS = [
   /\bpo\b/,
-  /\bpm\b/,
   /\bba\b/,
-  /\bmoa\b/,
-  /\bamoa\b/,
   /\bproxy\s+po\b/,
+  /\bchef(?:fe)?s?\s+de\s+projets?\b.*\b(?:moa|amoa)\b/,
+  /\b(?:moa|amoa)\b.*\bchef(?:fe)?s?\s+de\s+projets?\b/,
+  /\bconsultant(?:e)?s?\b.*\b(?:moa|amoa)\b/,
+  /\b(?:moa|amoa)\b.*\bconsultant(?:e)?s?\b/,
 ]
 
 const COMPATIBLE_ROLES = ['chef de projet web', 'project manager digital']
@@ -38,6 +45,25 @@ const EXCLUDED_ROLES = [
   'scrum master',
   'delivery manager',
   'product ops',
+  'chef du service juridique',
+  'service juridique',
+  'juriste',
+  'responsable juridique',
+  'contract manager',
+  'charge prevention risques professionnels',
+  'chargé prévention risques professionnels',
+  'prevention risques professionnels',
+  'prévention risques professionnels',
+  'police municipale',
+  'policier municipal',
+  'gardien police municipale',
+  'gardien de pm',
+  'maitre de ceremonie',
+  'maître de cérémonie',
+  'porteur funeraire',
+  'porteur funéraire',
+  'chauffeur funeraire',
+  'chauffeur funéraire',
 ]
 
 const PRODUCT_CONTEXT = ['produit', 'product', 'metier', 'client', 'roadmap', 'backlog', 'user story', 'agile', 'discovery']
@@ -84,10 +110,10 @@ export function detectRole(title, text = title) {
   const targetInTitle = hasClearTargetRole(title)
   const targetInText = hasClearTargetRole(text)
 
+  if (includesAny(title, EXCLUDED_ROLES)) return { status: 'reject', label: 'rôle exclu' }
   if (targetInTitle) return { status: 'clear', label: 'rôle cible clair' }
   if (includesAny(title, COMPATIBLE_ROLES)) return { status: 'compatible', label: 'chef de projet digital compatible' }
-  if (targetInText) return { status: 'ambiguous', label: 'rôle cible dans la description', reason: 'rôle ambigu' }
-  if (includesAny(title, EXCLUDED_ROLES)) return { status: 'reject', label: 'rôle exclu' }
+  if (targetInText) return { status: 'reject', label: 'rôle cible absent de l’intitulé' }
   if (includesAny(text, EXCLUDED_ROLES) && !includesAny(text, PRODUCT_CONTEXT)) return { status: 'reject', label: 'rôle trop technique' }
   return { status: 'reject', label: 'rôle hors cible' }
 }

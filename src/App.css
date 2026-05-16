@@ -99,6 +99,35 @@ h1 {
   letter-spacing: 0;
 }
 
+.app-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.profile-badge {
+  display: grid;
+  gap: 2px;
+  min-width: 150px;
+  border: 1px solid #cbd5c1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  text-align: right;
+}
+
+.profile-badge span {
+  color: #5d6a61;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.profile-badge strong {
+  color: #18211b;
+  font-size: 0.95rem;
+}
+
 p {
   margin: 0;
   color: #4d5a51;

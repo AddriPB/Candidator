@@ -1,8 +1,11 @@
 import 'dotenv/config'
+import { exitIfBotPaused } from '../runtime/pause.js'
 import { loadRadarConfig } from '../radar/config.js'
 import { runDailyRadar } from '../radar/pipeline.js'
 import { sendDailyApplicationEmails } from '../applications/emailer.js'
 import { openDatabase } from '../storage/database.js'
+
+exitIfBotPaused()
 
 const config = loadRadarConfig()
 const db = openDatabase()

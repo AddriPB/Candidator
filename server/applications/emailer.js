@@ -1,7 +1,10 @@
 import path from 'node:path'
 import { sendEmail } from '../email/smtp.js'
 import { getCvState } from '../cv/storage.js'
+import { detectRole } from '../radar/filter.js'
 import { stableHash } from '../radar/hash.js'
+import { loadCandidateProfiles, resolveProfileRuntime, selectCandidateProfile } from '../profiles/config.js'
+import { renderApplicationTemplate } from './templates.js'
 import { chooseNextContact, discoverContactsForOffer } from './contactDiscovery.js'
 import {
   getApplicationCandidateOffers,
@@ -15,6 +18,7 @@ import {
 
 const TITLE_PLACEHOLDER = '[Intitulé du poste]'
 const OFFER_URL_PLACEHOLDER = '[URL de l’offre]'
+const SENT_STATUSES = new Set(['sent', 'sent_pending_delivery', 'delivered_or_no_bounce_after_grace_period'])
 
 export async function sendDailyApplicationEmails({
   db,
@@ -28,15 +32,16 @@ export async function sendDailyApplicationEmails({
   if (!db) throw new Error('Base de donnees manquante.')
 
   const source = offers ? { startedAt, offers: offers.filter((offer) => isApplicationCandidateOffer(offer, { now, env })) } : getApplicationCandidateOffers(db, { now })
-  const cvState = getCvState()
-  const context = buildApplicationContext(cvState)
+  const profiles = loadCandidateProfiles({ env })
+  const legacyContext = profiles.length ? null : buildApplicationContext(getCvState())
   const cutoff = blockCutoff(now, env).toISOString()
   const recentSends = getRecentApplicationEmailSends(db, cutoff)
   const sentOfferKeys = new Set(recentSends
-    .filter((row) => ['sent', 'sent_pending_delivery', 'delivered_or_no_bounce_after_grace_period'].includes(row.status))
+    .filter((row) => SENT_STATUSES.has(row.status))
     .map((row) => row.offerKey))
   const dayStart = startOfUtcDay(now).toISOString()
   let liveSendsToday = recentSends.filter((row) => row.sentAt >= dayStart && isAcceptedSend(row)).length
+  const sendsTodayByProfile = countSendsTodayByProfile(recentSends, dayStart)
   const dailyLimit = positiveInteger(env.APPLICATION_EMAIL_DAILY_LIMIT, 20)
 
   const summary = {
@@ -66,11 +71,11 @@ export async function sendDailyApplicationEmails({
     return summary
   }
 
-  if (!context.ready) {
-    const result = { status: 'skipped', reason: context.reason }
+  if (legacyContext && !legacyContext.ready) {
+    const result = { status: 'skipped', reason: legacyContext.reason }
     summary.skipped = source.offers.length
     summary.results = source.offers.map((offer) => ({ ...result, offerId: offer.id, offerTitle: offer.title }))
-    logger.warn(`[applications] envoi ignore: ${context.reason}`)
+    logger.warn(`[applications] envoi ignore: ${legacyContext.reason}`)
     return summary
   }
 
@@ -84,6 +89,26 @@ export async function sendDailyApplicationEmails({
     if (liveSendsToday >= dailyLimit) {
       summary.skipped += 1
       summary.results.push({ status: 'skipped', reason: 'daily_limit_reached', offerId: offer.id, offerKey, offerTitle: offer.title })
+      continue
+    }
+
+    const profile = profiles.length ? selectCandidateProfile(offer, profiles) : null
+    if (profiles.length && !profile) {
+      summary.skipped += 1
+      summary.results.push({ status: 'skipped', reason: 'no_matching_profile', offerId: offer.id, offerKey, offerTitle: offer.title })
+      logger.warn(`[applications] envoi ignore ${offer.id}: no_matching_profile`)
+      continue
+    }
+    const context = profile ? buildApplicationContextFromProfile(profile) : legacyContext
+    if (!context.ready) {
+      summary.skipped += 1
+      summary.results.push({ status: 'skipped', reason: context.reason, offerId: offer.id, offerKey, offerTitle: offer.title, profilePseudo: context.profilePseudo })
+      logger.warn(`[applications] envoi ignore ${offer.id}: ${context.reason}`)
+      continue
+    }
+    if (profile && Number(sendsTodayByProfile.get(profile.pseudo) || 0) >= profile.dailyQuota) {
+      summary.skipped += 1
+      summary.results.push({ status: 'skipped', reason: 'profile_daily_limit_reached', offerId: offer.id, offerKey, offerTitle: offer.title, profilePseudo: profile.pseudo })
       continue
     }
 
@@ -109,6 +134,7 @@ export async function sendDailyApplicationEmails({
       const attemptId = buildAttemptId({ offerKey, email: contact.email, now })
       const sentTo = applicationRecipient([contact.email], env)
       const bounceAddress = buildBounceAddress(attemptId, env)
+      const sendEnv = buildApplicationSmtpEnv(context, env)
 
       try {
         const result = await mailer({
@@ -125,9 +151,10 @@ export async function sendDailyApplicationEmails({
             envelope: { from: bounceAddress, to: Array.isArray(sentTo) ? sentTo : [sentTo] },
             dsn: { id: attemptId, return: 'headers', notify: ['failure', 'delay'], recipient: contact.email },
           } : {}),
-        }, env)
+        }, sendEnv)
         const row = {
           sentAt,
+          profilePseudo: context.profilePseudo,
           offerKey,
           offerId: String(offer.id || ''),
           offerTitle: String(offer.title || ''),
@@ -145,6 +172,7 @@ export async function sendDailyApplicationEmails({
         updateApplicationContactStatus(db, { offerKey, email: contact.email, status: 'sent_pending_delivery', lastAttemptAt: sentAt, incrementAttempts: true })
         sentOfferKeys.add(offerKey)
         liveSendsToday += 1
+        if (context.profilePseudo) sendsTodayByProfile.set(context.profilePseudo, Number(sendsTodayByProfile.get(context.profilePseudo) || 0) + 1)
         summary.sent += 1
         summary.results.push({ ...row, cvFileName: context.cvFileName })
         sent = true
@@ -153,6 +181,7 @@ export async function sendDailyApplicationEmails({
         const status = hardFailure ? 'invalid' : 'failed'
         const row = {
           sentAt,
+          profilePseudo: context.profilePseudo,
           offerKey,
           offerId: String(offer.id || ''),
           offerTitle: String(offer.title || ''),
@@ -202,6 +231,15 @@ export async function sendDailyApplicationEmails({
 export function buildApplicationMessage({ offer, context }) {
   const title = String(offer.title || '').trim() || 'poste propose'
   const offerUrl = applicationOfferUrl(offer)
+  if (context.applicationMail.dynamicTemplate) {
+    const rendered = renderApplicationTemplate({ offer, context, offerUrl })
+    return {
+      subject: rendered.subject,
+      text: ensureOfferUrlLine(rendered.text, offerUrl),
+      roleType: rendered.roleType,
+      angle: rendered.angle,
+    }
+  }
   return {
     subject: renderTemplate(context.applicationMail.subjectTemplate, title, offerUrl),
     text: ensureOfferUrlLine(renderTemplate(context.applicationMail.bodyTemplate, title, offerUrl), offerUrl),
@@ -268,9 +306,61 @@ export function buildApplicationContext(cvState) {
   return {
     ready: missing.length === 0,
     reason: missing.join(', '),
+    profilePseudo: cvState.pseudo || '',
+    emailFrom: '',
     cvFileName: activeFile,
     cvPath,
     applicationMail: hydrateIdentity(applicationMail),
+  }
+}
+
+export function buildApplicationContextFromProfile(profile) {
+  const runtime = resolveProfileRuntime(profile)
+  const cvState = getCvState({ pseudo: runtime.pseudo })
+  const profileMail = cvState.applicationMail?.configured ? cvState.applicationMail : {}
+  const activeFile = cvState.activeFile || ''
+  const cvPath = activeFile ? path.join(cvState.storageDir, activeFile) : runtime.cvPath
+  const applicationMail = {
+    firstName: profileMail.firstName || runtime.firstName,
+    lastName: profileMail.lastName || runtime.lastName,
+    phone: profileMail.phone || runtime.phone || '',
+    dynamicTemplate: runtime.template,
+  }
+  const missing = []
+  if (!applicationMail.firstName) missing.push('prenom manquant')
+  if (!applicationMail.lastName) missing.push('nom manquant')
+  if (!cvPath) missing.push('CV manquant')
+  else if (!activeFile && !runtime.ready && runtime.reason.includes('CV')) missing.push(runtime.reason)
+
+  const ready = (runtime.ready || Boolean(activeFile)) ? missing.length === 0 : runtime.ready
+
+  return {
+    ready,
+    reason: ready ? '' : (missing.length ? missing.join(', ') : runtime.reason),
+    profilePseudo: runtime.pseudo,
+    emailFrom: runtime.emailFrom,
+    smtpPrefix: runtime.smtpPrefix,
+    cvFileName: activeFile || runtime.cvFileName,
+    cvPath,
+    applicationMail,
+  }
+}
+
+export function buildApplicationSmtpEnv(context, env = process.env) {
+  const base = context?.emailFrom ? { ...env, APPLICATION_FROM: context.emailFrom } : { ...env }
+  const prefix = String(context?.smtpPrefix || '').trim()
+  if (!prefix) return base
+
+  const prefixed = (name) => env[`${prefix}_${name}`]
+  const from = prefixed('APPLICATION_FROM') || prefixed('MAIL_FROM') || context?.emailFrom
+  return {
+    ...base,
+    SMTP_HOST: prefixed('SMTP_HOST') || base.SMTP_HOST,
+    SMTP_PORT: prefixed('SMTP_PORT') || base.SMTP_PORT,
+    SMTP_SECURE: prefixed('SMTP_SECURE') || base.SMTP_SECURE,
+    SMTP_USER: prefixed('SMTP_USER') || base.SMTP_USER,
+    SMTP_PASSWORD: prefixed('SMTP_PASSWORD') || prefixed('SMTP_PASS') || base.SMTP_PASSWORD,
+    APPLICATION_FROM: from || base.APPLICATION_FROM,
   }
 }
 
@@ -311,14 +401,14 @@ function applicationOfferUrl(offer) {
 }
 
 export function applicationRecipient(originalRecipients, env) {
-  const mode = String(env.APPLICATION_EMAIL_DELIVERY_MODE || 'test').toLowerCase()
+  const mode = String(env.APPLICATION_EMAIL_DELIVERY_MODE || 'live').toLowerCase()
   const redirectTo = String(env.APPLICATION_EMAIL_REDIRECT_TO || '').trim()
   if (mode !== 'live') return redirectTo
   return originalRecipients.length === 1 ? originalRecipients[0] : originalRecipients
 }
 
 export function applicationDeliveryCheck(env = process.env) {
-  const mode = String(env.APPLICATION_EMAIL_DELIVERY_MODE || 'test').toLowerCase()
+  const mode = String(env.APPLICATION_EMAIL_DELIVERY_MODE || 'live').toLowerCase()
   const redirectTo = String(env.APPLICATION_EMAIL_REDIRECT_TO || '').trim()
   if (mode === 'live' || redirectTo) return { allowed: true, reason: '' }
   return { allowed: false, reason: 'test_redirect_missing' }
@@ -331,6 +421,8 @@ function normalizedEmails(emails) {
 function isApplicationCandidateOffer(offer, { now, env }) {
   const status = offer.evaluation?.status || ''
   if (offer.verdict === 'à rejeter' || status === 'à rejeter') return false
+  const role = detectRole(String(offer.title || ''), String(offer.title || ''))
+  if (role.status !== 'clear' && role.status !== 'compatible') return false
   const date = new Date(offer.publishedAt || offer.collectedAt || '')
   if (Number.isNaN(date.getTime())) return false
   return date >= offerWindowStart(now, env) && date <= now
@@ -386,6 +478,17 @@ export function positiveInteger(value, fallback) {
 
 function isAcceptedSend(row) {
   return ['sent_pending_delivery', 'hard_bounced', 'soft_bounced', 'retry_scheduled', 'delivered_or_no_bounce_after_grace_period'].includes(row.status)
+}
+
+function countSendsTodayByProfile(sends, dayStart) {
+  const counts = new Map()
+  for (const row of sends) {
+    if (row.sentAt < dayStart || !isAcceptedSend(row)) continue
+    const pseudo = String(row.profilePseudo || '').trim()
+    if (!pseudo) continue
+    counts.set(pseudo, Number(counts.get(pseudo) || 0) + 1)
+  }
+  return counts
 }
 
 export function applicationSendWindow(now, env) {
