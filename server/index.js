@@ -7,7 +7,7 @@ import { getAuthDiagnostics, loginHandler, logoutHandler, meHandler, requireAuth
 import { checkSources } from './connectors/sourceChecks.js'
 import { cvDownloadPath, getCvState, saveApplicationMailTemplate, saveCvUpload, setActiveCv } from './cv/storage.js'
 import { assertSmtpConfig } from './email/smtp.js'
-import { loadCandidateProfiles, profilePublicSummary } from './profiles/config.js'
+import { loadCandidateProfiles, profilePublicSummary, selectCandidateProfile } from './profiles/config.js'
 import { getApplicationEmailEligibleOffers, getApplicationEmailSends, getLatestApplicationCandidateOffers, getLatestSourceChecks, getOfferEmailStats, openDatabase, pruneOldData, saveSourceCheckLogs } from './storage/database.js'
 import { stableHash } from './radar/hash.js'
 
@@ -64,8 +64,8 @@ app.get('/api/source-checks/latest', requireAuth, (_req, res) => {
   res.json({ checks: getLatestSourceChecks(db) })
 })
 
-app.get('/api/offers', requireAuth, (_req, res) => {
-  res.json(getOffersScreenState(db))
+app.get('/api/offers', requireAuth, (req, res) => {
+  res.json(getOffersScreenState(db, { profilePseudo: reqProfilePseudo(req) }))
 })
 
 app.get('/api/profiles', requireAuth, (_req, res) => {
@@ -140,7 +140,11 @@ app.post('/api/test/application-email', requireAuth, async (req, res, next) => {
 })
 
 app.get('/api/cv', requireAuth, (req, res) => {
-  res.json(getCvState({ pseudo: reqProfilePseudo(req) }))
+  const profilePseudo = reqProfilePseudo(req)
+  const profiles = loadCandidateProfiles()
+  const profile = profiles.find((item) => item.pseudo === profilePseudo)
+  const cv = getCvState({ pseudo: profilePseudo })
+  res.json(profile ? withProfileCvFallback(cv, profile) : cv)
 })
 
 app.post('/api/cv/upload', requireAuth, express.raw({
@@ -257,10 +261,18 @@ function logSourceCheckRequest(req, res, next) {
   next()
 }
 
-function getOffersScreenState(db) {
+function getOffersScreenState(db, { profilePseudo = '' } = {}) {
   const source = getLatestApplicationCandidateOffers(db)
-  const sendsByOfferKey = applicationSendsByOfferKey(getApplicationEmailSends(db))
-  const offers = source.offers.map((offer) => {
+  const profiles = loadCandidateProfiles()
+  const normalizedProfilePseudo = String(profilePseudo || '').trim()
+  const selectedProfile = normalizedProfilePseudo
+    ? profiles.find((profile) => profile.pseudo === normalizedProfilePseudo)
+    : null
+  const sendsByOfferKey = applicationSendsByOfferKey(getApplicationEmailSends(db), { profilePseudo: selectedProfile?.pseudo || '' })
+  const screenOffers = selectedProfile
+    ? source.offers.filter((offer) => selectCandidateProfile(offer, profiles)?.pseudo === selectedProfile.pseudo)
+    : source.offers
+  const offers = screenOffers.map((offer) => {
     const offerKey = applicationOfferKey(offer)
     const latestSend = sendsByOfferKey.get(offerKey)
     return {
@@ -279,9 +291,10 @@ function getOffersScreenState(db) {
   }
 }
 
-function applicationSendsByOfferKey(sends) {
+function applicationSendsByOfferKey(sends, { profilePseudo = '' } = {}) {
   const acceptedStatuses = new Set(['sent', 'sent_pending_delivery', 'delivered_or_no_bounce_after_grace_period'])
   const rows = sends
+    .filter((row) => !profilePseudo || row.profilePseudo === profilePseudo)
     .filter((row) => row.actionType !== 'spontaneous_application')
     .filter((row) => acceptedStatuses.has(row.status))
     .sort((a, b) => String(b.sentAt).localeCompare(String(a.sentAt)))
@@ -290,6 +303,22 @@ function applicationSendsByOfferKey(sends) {
     if (row.offerKey && !result.has(row.offerKey)) result.set(row.offerKey, row)
   }
   return result
+}
+
+function withProfileCvFallback(cv, profile) {
+  if (cv.applicationMail?.configured) return cv
+  return {
+    ...cv,
+    applicationMail: {
+      ...cv.applicationMail,
+      firstName: profile.firstName || cv.applicationMail?.firstName || '',
+      lastName: profile.lastName || cv.applicationMail?.lastName || '',
+      phone: profile.phone || cv.applicationMail?.phone || '',
+      subjectTemplate: profile.template?.subject || cv.applicationMail?.subjectTemplate,
+      bodyTemplate: profile.template?.body || cv.applicationMail?.bodyTemplate,
+      configured: false,
+    },
+  }
 }
 
 function applicationOfferKey(offer) {

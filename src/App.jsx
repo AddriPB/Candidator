@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 const API_BASE = String(import.meta.env.VITE_PUBLIC_API_BASE || '').replace(/\/$/, '')
 const SESSION_TOKEN_KEY = 'opportunity_radar_session_token'
+const SELECTED_PROFILE_KEY = 'opportunity_radar_selected_profile'
 const ROLE_FILTERS = [
   { value: 'all', label: 'Tous les postes', terms: [] },
   { value: 'po', label: 'PO / Product Owner', terms: ['po', 'product owner'] },
@@ -44,7 +45,7 @@ export default function App() {
   const [cvLoading, setCvLoading] = useState(false)
   const [cvError, setCvError] = useState('')
   const [cvUploading, setCvUploading] = useState(false)
-  const [selectedCvProfile, setSelectedCvProfile] = useState('')
+  const [selectedProfile, setSelectedProfile] = useState(readSelectedProfile())
 
   const api = useMemo(() => createApi(API_BASE), [])
   const roleFilteredOffers = useMemo(
@@ -55,6 +56,7 @@ export default function App() {
     () => filterOffersByApplicationStatus(roleFilteredOffers, applicationStatusFilter),
     [roleFilteredOffers, applicationStatusFilter],
   )
+  const visibleCvState = profileState?.mode === 'multi' && cvState?.pseudo !== selectedProfile ? null : cvState
 
   useEffect(() => {
     api('/api/auth/me')
@@ -74,14 +76,18 @@ export default function App() {
 
   useEffect(() => {
     if (!authenticated) return
-    loadOffers()
     loadProfiles()
   }, [authenticated])
 
   useEffect(() => {
-    if (!authenticated || view !== 'cv') return
+    if (!authenticated || !isProfileReady(profileState, selectedProfile)) return
+    loadOffers()
+  }, [authenticated, profileState?.mode, selectedProfile])
+
+  useEffect(() => {
+    if (!authenticated || view !== 'cv' || !isProfileReady(profileState, selectedProfile)) return
     loadCv()
-  }, [authenticated, view, selectedCvProfile])
+  }, [authenticated, view, profileState?.mode, selectedProfile])
 
   useEffect(() => {
     if (!authenticated || view !== 'test') return
@@ -113,7 +119,7 @@ export default function App() {
     setOffersLoading(true)
     setOffersError('')
     try {
-      const data = await api('/api/offers')
+      const data = await api(`/api/offers${profileState?.mode === 'multi' ? profileQuery(selectedProfile) : ''}`)
       setOffers(data.offers || [])
       setOffersRunAt(data.startedAt || null)
     } catch (error) {
@@ -128,8 +134,10 @@ export default function App() {
     try {
       const data = await api('/api/profiles')
       setProfileState(data)
-      if (data.mode === 'multi' && !selectedCvProfile) {
-        setSelectedCvProfile(data.profiles?.[0]?.pseudo || '')
+      if (data.mode === 'multi') {
+        const pseudos = new Set((data.profiles || []).map((profile) => profile.pseudo))
+        const nextProfile = pseudos.has(selectedProfile) ? selectedProfile : data.profiles?.[0]?.pseudo || ''
+        updateSelectedProfile(nextProfile)
       }
     } catch (error) {
       if (handleAuthError(error)) return
@@ -193,7 +201,7 @@ export default function App() {
     setCvLoading(true)
     setCvError('')
     try {
-      const data = await api(`/api/cv${profileQuery(selectedCvProfile)}`)
+      const data = await api(`/api/cv${profileState?.mode === 'multi' ? profileQuery(selectedProfile) : ''}`)
       setCvState(data)
     } catch (error) {
       if (handleAuthError(error)) return
@@ -208,7 +216,7 @@ export default function App() {
     setCvUploading(true)
     setCvError('')
     try {
-      const data = await uploadFile(`${API_BASE}/api/cv/upload${profileQuery(selectedCvProfile)}`, file)
+      const data = await uploadFile(`${API_BASE}/api/cv/upload${profileState?.mode === 'multi' ? profileQuery(selectedProfile) : ''}`, file)
       setCvState(data)
       setMessage('CV importé et défini comme actif.')
     } catch (error) {
@@ -225,7 +233,7 @@ export default function App() {
     try {
       const data = await api('/api/cv/active', {
         method: 'POST',
-        body: JSON.stringify({ fileName, profilePseudo: selectedCvProfile }),
+        body: JSON.stringify({ fileName, profilePseudo: profileState?.mode === 'multi' ? selectedProfile : '' }),
       })
       setCvState(data)
       setMessage('CV actif mis à jour.')
@@ -243,7 +251,7 @@ export default function App() {
     try {
       const data = await api('/api/cv/application-mail', {
         method: 'POST',
-        body: JSON.stringify({ ...applicationMail, profilePseudo: selectedCvProfile }),
+        body: JSON.stringify({ ...applicationMail, profilePseudo: profileState?.mode === 'multi' ? selectedProfile : '' }),
       })
       setCvState(data)
       setMessage('Texte de candidature mis à jour.')
@@ -270,6 +278,17 @@ export default function App() {
     setView(nextView)
   }
 
+  function updateSelectedProfile(pseudo) {
+    const value = String(pseudo || '').trim()
+    setSelectedProfile(value)
+    setRoleFilter('all')
+    setOffers([])
+    setCvState(null)
+    setOffersError('')
+    setCvError('')
+    saveSelectedProfile(value)
+  }
+
   if (loading) return <main className="page"><section className="panel">Chargement...</section></main>
 
   return (
@@ -277,7 +296,7 @@ export default function App() {
       <section className={authenticated ? 'app-panel' : 'panel'}>
         <div className="app-header">
           <h1>Opportunity Radar</h1>
-          {authenticated && <ProfileBadge profileState={profileState} />}
+          {authenticated && <ProfileBadge profileState={profileState} selectedProfile={selectedProfile} />}
         </div>
 
         {!authenticated ? (
@@ -311,13 +330,13 @@ export default function App() {
                 apiBase={API_BASE}
                 cvError={cvError}
                 cvLoading={cvLoading}
-                cvState={cvState}
+                cvState={visibleCvState}
                 cvUploading={cvUploading}
                 profileState={profileState}
-                selectedProfile={selectedCvProfile}
+                selectedProfile={selectedProfile}
                 onRefresh={loadCv}
                 onSaveApplicationMail={saveCvApplicationMail}
-                onSelectProfile={setSelectedCvProfile}
+                onSelectProfile={updateSelectedProfile}
                 onSetActive={setActiveCv}
                 onUpload={uploadCv}
               />
@@ -346,9 +365,12 @@ export default function App() {
                 offersRunAt={offersRunAt}
                 onRefresh={loadOffers}
                 applicationStatusFilter={applicationStatusFilter}
+                profileState={profileState}
                 roleFilter={roleFilter}
                 roleFilteredOffers={roleFilteredOffers}
+                selectedProfile={selectedProfile}
                 setApplicationStatusFilter={setApplicationStatusFilter}
+                setSelectedProfile={updateSelectedProfile}
                 setRoleFilter={setRoleFilter}
               />
             )}
@@ -361,10 +383,13 @@ export default function App() {
   )
 }
 
-function ProfileBadge({ profileState }) {
-  const active = profileState?.active
+function ProfileBadge({ profileState, selectedProfile }) {
+  const selected = profileState?.mode === 'multi'
+    ? profileState.profiles?.find((profile) => profile.pseudo === selectedProfile)
+    : null
+  const active = selected || profileState?.active
   const label = active?.label || active?.pseudo || 'profil historique'
-  const mode = profileState?.mode === 'multi' ? 'sélection auto' : 'profil actif'
+  const mode = profileState?.mode === 'multi' ? 'profil sélectionné' : 'profil actif'
   return (
     <div className="profile-badge" title="Profil candidat utilisé pour les candidatures">
       <span>{mode}</span>
@@ -381,18 +406,34 @@ function OffersScreen({
   offersLoading,
   offersRunAt,
   onRefresh,
+  profileState,
   roleFilter,
   roleFilteredOffers,
+  selectedProfile,
   setApplicationStatusFilter,
+  setSelectedProfile,
   setRoleFilter,
 }) {
   const visibleOffersWithEmail = filteredOffers.filter((offer) => offer.hasEmail || offer.emails?.length).length
   const toApplyCount = roleFilteredOffers.filter((offer) => offer.applicationStatus !== 'candidatée').length
   const appliedCount = roleFilteredOffers.filter((offer) => offer.applicationStatus === 'candidatée').length
+  const profiles = profileState?.mode === 'multi' ? profileState.profiles || [] : []
 
   return (
     <div className="stack">
       <div className="toolbar">
+        {profiles.length > 0 && (
+          <label>
+            Profil
+            <select value={selectedProfile} onChange={(event) => setSelectedProfile(event.target.value)}>
+              {profiles.map((profile) => (
+                <option key={profile.pseudo} value={profile.pseudo}>
+                  {profile.label || profile.pseudo}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label>
           Poste
           <select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>
@@ -822,6 +863,28 @@ async function uploadFile(url, file) {
 function profileQuery(profilePseudo) {
   const value = String(profilePseudo || '').trim()
   return value ? `?profilePseudo=${encodeURIComponent(value)}` : ''
+}
+
+function isProfileReady(profileState, selectedProfile) {
+  if (!profileState) return false
+  return profileState.mode !== 'multi' || Boolean(String(selectedProfile || '').trim())
+}
+
+function saveSelectedProfile(pseudo) {
+  try {
+    if (pseudo) window.localStorage.setItem(SELECTED_PROFILE_KEY, pseudo)
+    else window.localStorage.removeItem(SELECTED_PROFILE_KEY)
+  } catch {
+    // The selector still works for the current session when localStorage is unavailable.
+  }
+}
+
+function readSelectedProfile() {
+  try {
+    return window.localStorage.getItem(SELECTED_PROFILE_KEY) || ''
+  } catch {
+    return ''
+  }
 }
 
 function saveSessionToken(token) {
