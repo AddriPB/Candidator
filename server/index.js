@@ -2,7 +2,7 @@ import 'dotenv/config'
 import express from 'express'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { sendApplicationTestEmail } from './applications/emailer.js'
+import { buildApplicationSmtpEnv, sendApplicationTestEmail } from './applications/emailer.js'
 import { getAuthDiagnostics, loginHandler, logoutHandler, meHandler, requireAuth } from './auth/index.js'
 import { checkSources } from './connectors/sourceChecks.js'
 import { cvDownloadPath, getCvState, saveApplicationMailTemplate, saveCvUpload, setActiveCv } from './cv/storage.js'
@@ -80,13 +80,23 @@ app.get('/api/profiles', requireAuth, (_req, res) => {
   })
 })
 
-app.get('/api/test/healthcheck', requireAuth, (_req, res) => {
-  const cv = getCvState()
+app.get('/api/test/healthcheck', requireAuth, (req, res) => {
   const profiles = loadCandidateProfiles()
-  const smtp = smtpHealth()
+  const profilePseudo = reqProfilePseudo(req)
+  const profile = profiles.find((item) => item.pseudo === profilePseudo)
+  const cv = getCvState({ pseudo: profilePseudo })
+  const cvWithFallback = profile ? withProfileCvFallback(cv, profile) : cv
+  const smtp = smtpHealth(profile)
   const stats = getOfferEmailStats(db)
-  const eligible = getApplicationEmailEligibleOffers(db)
-  const applicationMail = cv.applicationMail || {}
+  const offerState = getOffersScreenState(db, { profilePseudo })
+  const profileScopedOffers = profile ? offerState.offers : null
+  const offersWithEmail = profileScopedOffers
+    ? profileScopedOffers.filter((offer) => Array.isArray(offer.emails) && offer.emails.length > 0).length
+    : stats.offersWithEmail
+  const eligibleToEmail = profileScopedOffers
+    ? profileScopedOffers.filter((offer) => offer.applicationStatus !== 'candidatée' && Array.isArray(offer.emails) && offer.emails.length > 0).length
+    : getApplicationEmailEligibleOffers(db).offers.length
+  const applicationMail = cvWithFallback.applicationMail || {}
   res.json({
     checkedAt: new Date().toISOString(),
     bot: {
@@ -104,6 +114,7 @@ app.get('/api/test/healthcheck', requireAuth, (_req, res) => {
       ok: Boolean(cv.activeFile),
       activeFile: cv.activeFile || '',
       storageDir: cv.storageDir,
+      pseudo: cv.pseudo,
     },
     identity: {
       ok: Boolean(applicationMail.firstName && applicationMail.lastName && applicationMail.phone),
@@ -118,22 +129,22 @@ app.get('/api/test/healthcheck', requireAuth, (_req, res) => {
       blockMonths: Number(process.env.APPLICATION_EMAIL_BLOCK_MONTHS || 12),
       offerMaxMonths: Number(process.env.APPLICATION_EMAIL_OFFER_MAX_MONTHS || 12),
       offersRecent: stats.offersRecent,
-      offersWithEmail: stats.offersWithEmail,
-      eligibleToEmail: eligible.offers.length,
+      offersWithEmail,
+      eligibleToEmail,
       latestRunAt: stats.latestRunAt,
       since: stats.since,
     },
     profiles: {
       mode: profiles.length ? 'multi' : 'legacy',
       count: profiles.length || 1,
-      active: profiles.length ? 'auto' : cv.pseudo,
+      active: profile?.pseudo || (profiles.length ? 'auto' : cv.pseudo),
     },
   })
 })
 
 app.post('/api/test/application-email', requireAuth, async (req, res, next) => {
   try {
-    res.json(await sendApplicationTestEmail({ to: req.body?.to }))
+    res.json(await sendApplicationTestEmail({ to: req.body?.to, profilePseudo: reqProfilePseudo(req) }))
   } catch (error) {
     next(error)
   }
@@ -219,25 +230,26 @@ function decodeHeaderValue(value) {
   }
 }
 
-function smtpHealth() {
+function smtpHealth(profile = null) {
+  const env = profile ? buildApplicationSmtpEnv(profile, process.env) : process.env
   try {
-    assertSmtpConfig()
+    assertSmtpConfig(env)
     return {
       ok: true,
-      host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT),
-      secure: process.env.SMTP_SECURE === 'true',
-      user: maskEmail(process.env.SMTP_USER),
-      from: maskEmail(process.env.APPLICATION_FROM),
+      host: env.SMTP_HOST,
+      port: Number(env.SMTP_PORT),
+      secure: env.SMTP_SECURE === 'true',
+      user: maskEmail(env.SMTP_USER),
+      from: maskEmail(env.APPLICATION_FROM),
     }
   } catch (error) {
     return {
       ok: false,
-      host: process.env.SMTP_HOST || '',
-      port: Number(process.env.SMTP_PORT || 0),
-      secure: process.env.SMTP_SECURE === 'true',
-      user: maskEmail(process.env.SMTP_USER),
-      from: maskEmail(process.env.APPLICATION_FROM),
+      host: env.SMTP_HOST || '',
+      port: Number(env.SMTP_PORT || 0),
+      secure: env.SMTP_SECURE === 'true',
+      user: maskEmail(env.SMTP_USER),
+      from: maskEmail(env.APPLICATION_FROM),
       error: error.message,
     }
   }

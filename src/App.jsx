@@ -90,9 +90,9 @@ export default function App() {
   }, [authenticated, view, profileState?.mode, selectedProfile])
 
   useEffect(() => {
-    if (!authenticated || view !== 'test') return
+    if (!authenticated || view !== 'test' || !isProfileReady(profileState, selectedProfile)) return
     loadHealthcheck()
-  }, [authenticated, view])
+  }, [authenticated, view, profileState?.mode, selectedProfile])
 
   async function login(event) {
     event.preventDefault()
@@ -167,7 +167,7 @@ export default function App() {
     setHealthLoading(true)
     setHealthError('')
     try {
-      const data = await api('/api/test/healthcheck')
+      const data = await api(`/api/test/healthcheck${profileState?.mode === 'multi' ? profileQuery(selectedProfile) : ''}`)
       setHealth(data)
     } catch (error) {
       if (handleAuthError(error)) return
@@ -184,7 +184,7 @@ export default function App() {
     try {
       const data = await api('/api/test/application-email', {
         method: 'POST',
-        body: JSON.stringify({ to }),
+        body: JSON.stringify({ to, profilePseudo: profileState?.mode === 'multi' ? selectedProfile : '' }),
       })
       setTestEmailResult(data)
       setMessage(`Mail test envoyé à ${data.to}.`)
@@ -284,8 +284,10 @@ export default function App() {
     setRoleFilter('all')
     setOffers([])
     setCvState(null)
+    setHealth(null)
     setOffersError('')
     setCvError('')
+    setHealthError('')
     saveSelectedProfile(value)
   }
 

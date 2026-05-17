@@ -246,12 +246,15 @@ export function buildApplicationMessage({ offer, context }) {
   }
 }
 
-export async function sendApplicationTestEmail({ to, env = process.env, mailer = sendEmail } = {}) {
+export async function sendApplicationTestEmail({ to, profilePseudo = '', env = process.env, mailer = sendEmail } = {}) {
   const recipient = String(to || '').trim()
   if (!recipient) throw new Error('Destinataire manquant.')
 
-  const cvState = getCvState()
-  const context = buildApplicationContext(cvState)
+  const profiles = loadCandidateProfiles({ env })
+  const profile = profiles.find((item) => item.pseudo === String(profilePseudo || '').trim())
+  const context = profile
+    ? buildApplicationContextFromProfile(profile)
+    : buildApplicationContext(getCvState({ pseudo: profilePseudo }))
   if (!context.ready) throw new Error(context.reason)
 
   const offer = {
@@ -271,7 +274,7 @@ export async function sendApplicationTestEmail({ to, env = process.env, mailer =
         path: context.cvPath,
       },
     ],
-  }, env)
+  }, buildApplicationSmtpEnv(context, env))
 
   return {
     to: recipient,
