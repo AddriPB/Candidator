@@ -153,7 +153,7 @@ app.post('/api/cv/upload', requireAuth, express.raw({
 }), (req, res, next) => {
   try {
     res.json(saveCvUpload({
-      originalName: req.headers['x-file-name'],
+      originalName: decodeHeaderValue(req.headers['x-file-name']),
       buffer: req.body,
       pseudo: reqProfilePseudo(req),
     }))
@@ -208,6 +208,15 @@ function corsOrigins() {
 
 function reqProfilePseudo(req) {
   return String(req.query?.profilePseudo || req.body?.profilePseudo || '').trim()
+}
+
+function decodeHeaderValue(value) {
+  const raw = String(value || '')
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
 }
 
 function smtpHealth() {

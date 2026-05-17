@@ -846,15 +846,20 @@ async function uploadFile(url, file) {
   const token = readSessionToken()
   const headers = {
     'Content-Type': file.type || 'application/octet-stream',
-    'X-File-Name': file.name,
+    'X-File-Name': encodeURIComponent(file.name),
   }
   if (token) headers.Authorization = `Bearer ${token}`
-  const res = await fetch(url, {
-    method: 'POST',
-    credentials: 'include',
-    headers,
-    body: await file.arrayBuffer(),
-  })
+  let res
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers,
+      body: await file.arrayBuffer(),
+    })
+  } catch (error) {
+    throw new ApiError('network', { cause: error })
+  }
   const data = await readResponseBody(res)
   if (!res.ok) throw new ApiError('http', { status: res.status, statusText: res.statusText, data })
   return data
