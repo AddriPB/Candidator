@@ -342,6 +342,29 @@ test('stockage JSON: liste les offres avec email publiees depuis moins de 12 moi
   assert.deepEqual(result.offers.map((item) => item.id).sort(), ['recent-apply', 'recent-watch'])
 })
 
+test('stockage JSON: un chemin .json explicite ne tente pas SQLite', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-json-'))
+  const previousDatabasePath = process.env.DATABASE_PATH
+  const jsonPath = path.join(dir, 'store.json')
+  const originalWarn = console.warn
+  const warnings = []
+
+  try {
+    process.env.DATABASE_PATH = jsonPath
+    console.warn = (...args) => warnings.push(args.join(' '))
+    const db = openDatabase()
+
+    assert.equal(db.kind, 'json')
+    assert.equal(db.path, jsonPath)
+    assert.deepEqual(warnings, [])
+  } finally {
+    console.warn = originalWarn
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH
+    else process.env.DATABASE_PATH = previousDatabasePath
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('stockage SQLite: importe le store JSON existant si le binaire SQLite est disponible', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-sqlite-'))
   const previousDatabasePath = process.env.DATABASE_PATH

@@ -298,7 +298,13 @@ export default function App() {
       <section className={authenticated ? 'app-panel' : 'panel'}>
         <div className="app-header">
           <h1>Opportunity Radar</h1>
-          {authenticated && <ProfileBadge profileState={profileState} selectedProfile={selectedProfile} />}
+          {authenticated && (
+            <ProfileSelector
+              profileState={profileState}
+              selectedProfile={selectedProfile}
+              onSelectProfile={updateSelectedProfile}
+            />
+          )}
         </div>
 
         {!authenticated ? (
@@ -334,11 +340,9 @@ export default function App() {
                 cvLoading={cvLoading}
                 cvState={visibleCvState}
                 cvUploading={cvUploading}
-                profileState={profileState}
                 selectedProfile={selectedProfile}
                 onRefresh={loadCv}
                 onSaveApplicationMail={saveCvApplicationMail}
-                onSelectProfile={updateSelectedProfile}
                 onSetActive={setActiveCv}
                 onUpload={uploadCv}
               />
@@ -367,12 +371,9 @@ export default function App() {
                 offersRunAt={offersRunAt}
                 onRefresh={loadOffers}
                 applicationStatusFilter={applicationStatusFilter}
-                profileState={profileState}
                 roleFilter={roleFilter}
                 roleFilteredOffers={roleFilteredOffers}
-                selectedProfile={selectedProfile}
                 setApplicationStatusFilter={setApplicationStatusFilter}
-                setSelectedProfile={updateSelectedProfile}
                 setRoleFilter={setRoleFilter}
               />
             )}
@@ -385,16 +386,32 @@ export default function App() {
   )
 }
 
-function ProfileBadge({ profileState, selectedProfile }) {
+function ProfileSelector({ profileState, selectedProfile, onSelectProfile }) {
+  const profiles = profileState?.mode === 'multi' ? profileState.profiles || [] : []
   const selected = profileState?.mode === 'multi'
-    ? profileState.profiles?.find((profile) => profile.pseudo === selectedProfile)
+    ? profiles.find((profile) => profile.pseudo === selectedProfile)
     : null
   const active = selected || profileState?.active
   const label = active?.label || active?.pseudo || 'profil historique'
-  const mode = profileState?.mode === 'multi' ? 'profil sélectionné' : 'profil actif'
+
+  if (profiles.length > 0) {
+    return (
+      <label className="profile-selector" title="Profil candidat appliqué à tous les écrans">
+        <span>Profil actif</span>
+        <select value={selectedProfile} onChange={(event) => onSelectProfile(event.target.value)}>
+          {profiles.map((profile) => (
+            <option key={profile.pseudo} value={profile.pseudo}>
+              {profile.label || profile.pseudo}
+            </option>
+          ))}
+        </select>
+      </label>
+    )
+  }
+
   return (
     <div className="profile-badge" title="Profil candidat utilisé pour les candidatures">
-      <span>{mode}</span>
+      <span>Profil actif</span>
       <strong>{label}</strong>
     </div>
   )
@@ -408,34 +425,18 @@ function OffersScreen({
   offersLoading,
   offersRunAt,
   onRefresh,
-  profileState,
   roleFilter,
   roleFilteredOffers,
-  selectedProfile,
   setApplicationStatusFilter,
-  setSelectedProfile,
   setRoleFilter,
 }) {
   const visibleOffersWithEmail = filteredOffers.filter((offer) => offer.hasEmail || offer.emails?.length).length
   const toApplyCount = roleFilteredOffers.filter((offer) => offer.applicationStatus !== 'candidatée').length
   const appliedCount = roleFilteredOffers.filter((offer) => offer.applicationStatus === 'candidatée').length
-  const profiles = profileState?.mode === 'multi' ? profileState.profiles || [] : []
 
   return (
     <div className="stack">
       <div className="toolbar">
-        {profiles.length > 0 && (
-          <label>
-            Profil
-            <select value={selectedProfile} onChange={(event) => setSelectedProfile(event.target.value)}>
-              {profiles.map((profile) => (
-                <option key={profile.pseudo} value={profile.pseudo}>
-                  {profile.label || profile.pseudo}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
         <label>
           Poste
           <select value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>
@@ -636,17 +637,14 @@ function CvScreen({
   cvLoading,
   cvState,
   cvUploading,
-  profileState,
   selectedProfile,
   onRefresh,
   onSaveApplicationMail,
-  onSelectProfile,
   onSetActive,
   onUpload,
 }) {
   const files = cvState?.files || []
   const activeFile = cvState?.activeFile || ''
-  const profiles = profileState?.mode === 'multi' ? profileState.profiles || [] : []
   const [applicationMail, setApplicationMail] = useState(defaultApplicationMail())
   const previewTitle = 'PO / Product Owner'
   const previewSubject = renderApplicationMailTemplate(applicationMail.subjectTemplate, previewTitle)
@@ -682,18 +680,6 @@ function CvScreen({
   return (
     <div className="stack">
       <div className="toolbar cv-toolbar">
-        {profiles.length > 0 && (
-          <label>
-            Profil
-            <select value={selectedProfile} onChange={(event) => onSelectProfile(event.target.value)}>
-              {profiles.map((profile) => (
-                <option key={profile.pseudo} value={profile.pseudo}>
-                  {profile.label || profile.pseudo}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
         <label>
           Importer un CV
           <input

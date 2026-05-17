@@ -7,6 +7,8 @@ const require = createRequire(import.meta.url)
 
 export function openDatabase() {
   const dbPath = path.resolve(process.env.DATABASE_PATH || './data/opportunity-radar.sqlite')
+  if (usesJsonStore(dbPath)) return openJsonStore(dbPath)
+
   fs.mkdirSync(path.dirname(dbPath), { recursive: true })
   try {
     const Database = requireBetterSqlite()
@@ -17,11 +19,24 @@ export function openDatabase() {
     importJsonStoreIfSqliteEmpty(db, dbPath)
     return { kind: 'sqlite', db, path: dbPath }
   } catch (error) {
-    const jsonPath = dbPath.replace(/\.(sqlite|db)$/i, '.json')
-    const reportFallbackDir = path.resolve(process.env.RADAR_OUTPUT_DIR || './data/radar-runs')
-    console.warn(`[storage] better-sqlite3 unavailable, using JSON store at ${jsonPath}: ${error.message}`)
-    return { kind: 'json', path: jsonPath, reportFallbackDir, data: readJsonStore(jsonPath, { reportFallbackDir }) }
+    const jsonPath = sqlitePathToJsonPath(dbPath)
+    console.info(`[storage] better-sqlite3 unavailable, using JSON store at ${jsonPath}: ${error.message}`)
+    return openJsonStore(jsonPath)
   }
+}
+
+function usesJsonStore(dbPath) {
+  return /\.json$/i.test(dbPath) || String(process.env.STORAGE_DRIVER || '').toLowerCase() === 'json'
+}
+
+function openJsonStore(jsonPath) {
+  fs.mkdirSync(path.dirname(jsonPath), { recursive: true })
+  const reportFallbackDir = path.resolve(process.env.RADAR_OUTPUT_DIR || './data/radar-runs')
+  return { kind: 'json', path: jsonPath, reportFallbackDir, data: readJsonStore(jsonPath, { reportFallbackDir }) }
+}
+
+function sqlitePathToJsonPath(dbPath) {
+  return /\.(sqlite|db)$/i.test(dbPath) ? dbPath.replace(/\.(sqlite|db)$/i, '.json') : `${dbPath}.json`
 }
 
 export function pruneOldData(db, retentionDays = Number(process.env.DATA_RETENTION_DAYS || 90)) {
