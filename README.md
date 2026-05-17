@@ -139,8 +139,8 @@ correspondantes. Par exemple `"smtpPrefix": "SECOND"` active
 
 Deux familles sont prévues par l'exemple :
 
-- profil produit : Product Owner, Business Analyst, chef de projet MOA/AMOA ;
-- profil funéraire : conseiller funéraire, assistant funéraire et métiers
+- profil Adri : Product Owner, Business Analyst, chef de projet MOA/AMOA ;
+- profil Léna : conseiller funéraire, assistant funéraire et métiers
   funéraires similaires, avec exclusion explicite de maître de cérémonie,
   porteur et chauffeur.
 
@@ -159,8 +159,8 @@ Organisation locale recommandée :
 
 ```text
 config/candidate-profiles.local.json
-cv/produit/CV-produit.pdf
-cv/funeraire/CV-funeraire.pdf
+cv/adri/CV-adri.pdf
+cv/léna/CV-lena.pdf
 data/
 logs/
 ```

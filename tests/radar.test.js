@@ -20,6 +20,8 @@ import { nightlyRunSucceeded, recordNightlyAttempt, shouldRunNightlyRadar } from
 import { isQuotaReachedError, QUOTA_REACHED_CODE } from '../server/radar/adapters/jsearch.js'
 import { loadCandidateProfiles, selectCandidateProfile } from '../server/profiles/config.js'
 
+process.env.CANDIDATE_PROFILES_CONFIG = path.join(os.tmpdir(), 'opportunity-radar-test-missing-profiles.json')
+
 const baseConfig = {
   contrat: 'CDI',
   salaire_min: 60000,
@@ -44,7 +46,7 @@ function offer(overrides = {}) {
     currency: 'EUR',
     publishedAt: '',
     link: 'https://example.test/job/1',
-    description: 'Mission produit avec backlog, roadmap et utilisateurs métier.',
+    description: 'Mission adri avec backlog, roadmap et utilisateurs métier.',
     level: '',
     collectedAt: '2026-05-13T00:00:00.000Z',
     ...overrides,
@@ -72,7 +74,7 @@ test('filtrage rôle: rejette un poste sans rôle cible', () => {
 test('filtrage rôle: rejette un développeur IA pur', () => {
   const evaluation = evaluateOffer(offer({
     title: 'Développeur IA',
-    description: 'Développement logiciel machine learning sans responsabilité produit.',
+    description: 'Développement logiciel machine learning sans responsabilité adri.',
   }), baseConfig)
   assert.equal(evaluation.role.status, 'reject')
   assert.equal(evaluation.status, 'à rejeter')
@@ -80,7 +82,7 @@ test('filtrage rôle: rejette un développeur IA pur', () => {
 
 test('filtrage rôle: rejette un rôle cible seulement présent dans la description', () => {
   const candidate = offer({
-    title: 'Développeur logiciel - équipe produit',
+    title: 'Développeur logiciel - équipe adri',
     description: 'CDI Paris hybride. Poste recherché Product Owner senior pour piloter le backlog et coordonner le développement.',
   })
   const evaluation = evaluateOffer(candidate, baseConfig)
@@ -139,7 +141,7 @@ test('verdict: salaire et télétravail inconnus restent à candidater sans reje
     remote: '',
     salaryMin: null,
     salaryMax: null,
-    description: 'CDI Paris. Mission métier et produit.',
+    description: 'CDI Paris. Mission métier et adri.',
   })
   const evaluation = evaluateOffer(candidate, baseConfig)
   const scoring = scoreOffer(candidate, evaluation, baseConfig)
@@ -558,7 +560,7 @@ test('auth: rejette une requête protégée sans cookie ni Bearer', () => {
 test('cv: stocke les fichiers dans le sous-dossier du pseudo', () => {
   withCvEnv(() => {
     const state = saveCvUpload({
-      originalName: 'CV Produit.pdf',
+      originalName: 'CV Adri.pdf',
       buffer: Buffer.from('%PDF-1.4 test'),
     })
 
@@ -566,8 +568,8 @@ test('cv: stocke les fichiers dans le sous-dossier du pseudo', () => {
     assert.equal(state.pseudo, 'adrien-test')
     assert.ok(state.storageDir.endsWith(path.join('cv', 'adrien-test')))
     assert.equal(state.files.length, 1)
-    assert.equal(state.activeFile, 'CV Produit.pdf')
-    assert.equal(state.files[0].name, 'CV Produit.pdf')
+    assert.equal(state.activeFile, 'CV Adri.pdf')
+    assert.equal(state.files[0].name, 'CV Adri.pdf')
   })
 })
 
@@ -652,34 +654,48 @@ test('cv: stocke le mail de candidature dans le dossier du pseudo', () => {
 
 test('cv: separe les imports et identites par profil', () => {
   withCvEnv(() => {
-    const produit = saveCvUpload({
-      pseudo: 'produit',
-      originalName: 'CV-produit.pdf',
-      buffer: Buffer.from('%PDF produit'),
+    const adri = saveCvUpload({
+      pseudo: 'adri',
+      originalName: 'CV-adri.pdf',
+      buffer: Buffer.from('%PDF adri'),
     })
-    const funeraire = saveCvUpload({
-      pseudo: 'funeraire',
-      originalName: 'CV-funeraire.pdf',
-      buffer: Buffer.from('%PDF funeraire'),
+    const léna = saveCvUpload({
+      pseudo: 'léna',
+      originalName: 'CV-lena.pdf',
+      buffer: Buffer.from('%PDF lena'),
     })
 
     saveApplicationMailTemplate({
       firstName: 'Adrien',
-      lastName: 'Produit',
+      lastName: 'Adri',
       phone: '0600000001',
-    }, { pseudo: 'produit' })
+    }, { pseudo: 'adri' })
     saveApplicationMailTemplate({
       firstName: 'Adrien',
-      lastName: 'Funeraire',
+      lastName: 'Lena',
       phone: '0600000002',
-    }, { pseudo: 'funeraire' })
+    }, { pseudo: 'léna' })
 
-    assert.equal(produit.storageDir.endsWith(path.join('cv', 'produit')), true)
-    assert.equal(funeraire.storageDir.endsWith(path.join('cv', 'funeraire')), true)
-    assert.equal(getCvState({ pseudo: 'produit' }).activeFile, 'CV-produit.pdf')
-    assert.equal(getCvState({ pseudo: 'funeraire' }).activeFile, 'CV-funeraire.pdf')
-    assert.equal(getCvState({ pseudo: 'produit' }).applicationMail.phone, '0600000001')
-    assert.equal(getCvState({ pseudo: 'funeraire' }).applicationMail.phone, '0600000002')
+    assert.equal(adri.storageDir.endsWith(path.join('cv', 'adri')), true)
+    assert.equal(léna.storageDir.endsWith(path.join('cv', 'léna')), true)
+    assert.equal(getCvState({ pseudo: 'adri' }).activeFile, 'CV-adri.pdf')
+    assert.equal(getCvState({ pseudo: 'léna' }).activeFile, 'CV-lena.pdf')
+    assert.equal(getCvState({ pseudo: 'adri' }).applicationMail.phone, '0600000001')
+    assert.equal(getCvState({ pseudo: 'léna' }).applicationMail.phone, '0600000002')
+  })
+})
+
+test('cv: conserve les accents dans le pseudo de profil', () => {
+  withCvEnv(() => {
+    const state = saveCvUpload({
+      pseudo: 'Léna',
+      originalName: 'CV-lena.pdf',
+      buffer: Buffer.from('%PDF lena'),
+    })
+
+    assert.equal(state.pseudo, 'léna')
+    assert.equal(state.storageDir.endsWith(path.join('cv', 'léna')), true)
+    assert.equal(getCvState({ pseudo: 'léna' }).activeFile, 'CV-lena.pdf')
   })
 })
 
@@ -701,7 +717,7 @@ test('candidatures: rend le mail avec le titre de chaque annonce', () => {
 test('candidatures: envoie un mail par annonce recente meme avec la meme boite mail', async () => {
   await withCvEnv(async () => {
     saveCvUpload({
-      originalName: 'CV Produit.pdf',
+      originalName: 'CV Adri.pdf',
       buffer: Buffer.from('%PDF-1.4 test'),
     })
     saveApplicationMailTemplate({
@@ -738,14 +754,14 @@ test('candidatures: envoie un mail par annonce recente meme avec la meme boite m
       'Candidature : Product Owner',
       'Candidature : Product Manager',
     ])
-    assert.equal(sent.every((message) => message.attachments?.[0]?.filename === 'CV Produit.pdf'), true)
+    assert.equal(sent.every((message) => message.attachments?.[0]?.filename === 'CV Adri.pdf'), true)
   })
 })
 
 test('candidatures: bloque un nouvel envoi sur la meme annonce pendant 12 mois', async () => {
   await withCvEnv(async () => {
     saveCvUpload({
-      originalName: 'CV Produit.pdf',
+      originalName: 'CV Adri.pdf',
       buffer: Buffer.from('%PDF-1.4 test'),
     })
     saveApplicationMailTemplate({
@@ -787,7 +803,7 @@ test('candidatures: bloque un nouvel envoi sur la meme annonce pendant 12 mois',
 test('candidatures: bloque le mode test sans redirection explicite', async () => {
   await withCvEnv(async () => {
     saveCvUpload({
-      originalName: 'CV Produit.pdf',
+      originalName: 'CV Adri.pdf',
       buffer: Buffer.from('%PDF-1.4 test'),
     })
     saveApplicationMailTemplate({
@@ -825,7 +841,7 @@ test('candidatures: bloque le mode test sans redirection explicite', async () =>
 test('candidatures: bloque les envois hors fenetre 08h-21h Paris', async () => {
   await withCvEnv(async () => {
     saveCvUpload({
-      originalName: 'CV Produit.pdf',
+      originalName: 'CV Adri.pdf',
       buffer: Buffer.from('%PDF-1.4 test'),
     })
     saveApplicationMailTemplate({
@@ -864,7 +880,7 @@ test('candidatures: bloque les envois hors fenetre 08h-21h Paris', async () => {
 test('candidatures: autorise les envois dans la fenetre 08h-21h Paris', async () => {
   await withCvEnv(async () => {
     saveCvUpload({
-      originalName: 'CV Produit.pdf',
+      originalName: 'CV Adri.pdf',
       buffer: Buffer.from('%PDF-1.4 test'),
     })
     saveApplicationMailTemplate({
@@ -1027,7 +1043,7 @@ test('contacts web: ignore les pages sans signal ESN IDF', async () => {
 test('candidatures: tente une autre adresse apres rejet SMTP 5xx immediat', async () => {
   await withCvEnv(async () => {
     saveCvUpload({
-      originalName: 'CV Produit.pdf',
+      originalName: 'CV Adri.pdf',
       buffer: Buffer.from('%PDF-1.4 test'),
     })
     saveApplicationMailTemplate({
@@ -1073,7 +1089,7 @@ test('candidatures: tente une autre adresse apres rejet SMTP 5xx immediat', asyn
 test('candidatures: respecte le quota quotidien live', async () => {
   await withCvEnv(async () => {
     saveCvUpload({
-      originalName: 'CV Produit.pdf',
+      originalName: 'CV Adri.pdf',
       buffer: Buffer.from('%PDF-1.4 test'),
     })
     saveApplicationMailTemplate({
@@ -1113,7 +1129,7 @@ test('candidatures: respecte le quota quotidien live', async () => {
 test('rebonds: marque un hard bounce et accepte les envois sans rebond apres grace', async () => {
   await withCvEnv(async () => {
     saveCvUpload({
-      originalName: 'CV Produit.pdf',
+      originalName: 'CV Adri.pdf',
       buffer: Buffer.from('%PDF-1.4 test'),
     })
     saveApplicationMailTemplate({
@@ -1442,8 +1458,8 @@ test('profils candidats: choisit le profil selon le metier et respecte les exclu
   withProfilesEnv((configPath) => {
     const profiles = loadCandidateProfiles({ configPath })
 
-    assert.equal(selectCandidateProfile(offer({ title: 'Business Analyst Assurance' }), profiles).pseudo, 'produit')
-    assert.equal(selectCandidateProfile(offer({ title: 'Conseiller funéraire H/F', description: 'Pompes funèbres.' }), profiles).pseudo, 'funeraire')
+    assert.equal(selectCandidateProfile(offer({ title: 'Business Analyst Assurance' }), profiles).pseudo, 'adri')
+    assert.equal(selectCandidateProfile(offer({ title: 'Conseiller funéraire H/F', description: 'Pompes funèbres.' }), profiles).pseudo, 'léna')
     assert.equal(selectCandidateProfile(offer({ title: 'Maître de cérémonie funéraire H/F' }), profiles), null)
   })
 })
@@ -1458,14 +1474,14 @@ test('profils candidats: bloque un profil incomplet avant envoi', async () => {
       env: {
         APPLICATION_EMAIL_DELIVERY_MODE: 'live',
         CANDIDATE_PROFILES_CONFIG: configPath,
-        SMTP_USER: 'produit-smtp@example.test',
-        SMTP_PASSWORD: 'produit-password',
+        SMTP_USER: 'adri-smtp@example.test',
+        SMTP_PASSWORD: 'adri-password',
         SECOND_SMTP_HOST: 'smtp.second.example.test',
         SECOND_SMTP_PORT: '587',
         SECOND_SMTP_SECURE: 'false',
-        SECOND_SMTP_USER: 'funeraire-smtp@example.test',
-        SECOND_SMTP_PASSWORD: 'funeraire-password',
-        SECOND_MAIL_FROM: 'Funeraire <funeraire@example.test>',
+        SECOND_SMTP_USER: 'lena-smtp@example.test',
+        SECOND_SMTP_PASSWORD: 'lena-password',
+        SECOND_MAIL_FROM: 'Lena <lena@example.test>',
       },
       mailer: async (message) => {
         sent.push(message)
@@ -1473,7 +1489,7 @@ test('profils candidats: bloque un profil incomplet avant envoi', async () => {
       },
       logger: silentLogger(),
       offers: [
-        offer({ id: 'funeral:missing-cv', title: 'Conseiller funéraire H/F', company: 'Pompes Funèbres Exemple', emails: ['rh@funeraire.example'] }),
+        offer({ id: 'funeral:missing-cv', title: 'Conseiller funéraire H/F', company: 'Pompes Funèbres Exemple', emails: ['rh@léna.example'] }),
       ],
     })
 
@@ -1481,7 +1497,7 @@ test('profils candidats: bloque un profil incomplet avant envoi', async () => {
     assert.equal(summary.skipped, 1)
     assert.equal(sent.length, 0)
     assert.match(summary.results[0].reason, /CV introuvable/)
-    assert.equal(summary.results[0].profilePseudo, 'funeraire')
+    assert.equal(summary.results[0].profilePseudo, 'léna')
   }, { missingFuneralCv: true })
 })
 
@@ -1496,14 +1512,14 @@ test('profils candidats: envoie avec le CV, le from et le template du profil cho
       env: {
         APPLICATION_EMAIL_DELIVERY_MODE: 'live',
         CANDIDATE_PROFILES_CONFIG: configPath,
-        SMTP_USER: 'produit-smtp@example.test',
-        SMTP_PASSWORD: 'produit-password',
+        SMTP_USER: 'adri-smtp@example.test',
+        SMTP_PASSWORD: 'adri-password',
         SECOND_SMTP_HOST: 'smtp.second.example.test',
         SECOND_SMTP_PORT: '587',
         SECOND_SMTP_SECURE: 'false',
-        SECOND_SMTP_USER: 'funeraire-smtp@example.test',
-        SECOND_SMTP_PASSWORD: 'funeraire-password',
-        SECOND_MAIL_FROM: 'Funeraire <funeraire@example.test>',
+        SECOND_SMTP_USER: 'lena-smtp@example.test',
+        SECOND_SMTP_PASSWORD: 'lena-password',
+        SECOND_MAIL_FROM: 'Lena <lena@example.test>',
       },
       mailer: async (message, env) => {
         sent.push(message)
@@ -1512,17 +1528,17 @@ test('profils candidats: envoie avec le CV, le from et le template du profil cho
       },
       logger: silentLogger(),
       offers: [
-        offer({ id: 'funeral:1', title: 'Assistant funéraire H/F', company: 'Pompes Funèbres Exemple', emails: ['rh@funeraire.example'] }),
+        offer({ id: 'funeral:1', title: 'Assistant funéraire H/F', company: 'Pompes Funèbres Exemple', emails: ['rh@lena.example'] }),
       ],
     })
 
     assert.equal(summary.sent, 1)
-    assert.equal(summary.results[0].profilePseudo, 'funeraire')
-    assert.equal(sent[0].attachments[0].filename, 'CV-funeraire.pdf')
-    assert.equal(envs[0].APPLICATION_FROM, 'Funeraire <funeraire@example.test>')
+    assert.equal(summary.results[0].profilePseudo, 'léna')
+    assert.equal(sent[0].attachments[0].filename, 'CV-lena.pdf')
+    assert.equal(envs[0].APPLICATION_FROM, 'Lena <lena@example.test>')
     assert.equal(envs[0].SMTP_HOST, 'smtp.second.example.test')
-    assert.equal(envs[0].SMTP_USER, 'funeraire-smtp@example.test')
-    assert.equal(envs[0].SMTP_PASSWORD, 'funeraire-password')
+    assert.equal(envs[0].SMTP_USER, 'lena-smtp@example.test')
+    assert.equal(envs[0].SMTP_PASSWORD, 'lena-password')
     assert.match(sent[0].text, /posture sérieuse/)
     assert.match(sent[0].text, /Assistant funéraire H\/F/)
   })
@@ -1531,33 +1547,33 @@ test('profils candidats: envoie avec le CV, le from et le template du profil cho
 test('profils candidats: utilise le CV actif et l identite stockes par profil', () => {
   withCvEnv(() => {
     const uploaded = saveCvUpload({
-      pseudo: 'funeraire',
-      originalName: 'CV-ui-funeraire.pdf',
-      buffer: Buffer.from('%PDF ui funeraire'),
+      pseudo: 'léna',
+      originalName: 'CV-ui-léna.pdf',
+      buffer: Buffer.from('%PDF ui léna'),
     })
     saveApplicationMailTemplate({
       firstName: 'UI',
-      lastName: 'Funeraire',
+      lastName: 'Lena',
       phone: '0600000003',
-    }, { pseudo: 'funeraire' })
+    }, { pseudo: 'léna' })
 
     const context = buildApplicationContextFromProfile({
-      pseudo: 'funeraire',
+      pseudo: 'léna',
       firstName: 'Config',
       lastName: 'Config',
       phone: '0600000000',
-      emailFrom: 'funeraire@example.test',
+      emailFrom: 'léna@example.test',
       cvPath: '/tmp/cv-config-missing.pdf',
-      targetRoles: ['funeraire'],
+      targetRoles: ['léna'],
       excludedRoles: [],
       dailyQuota: 1,
     })
 
     assert.equal(context.ready, true)
-    assert.equal(context.cvFileName, 'CV-ui-funeraire.pdf')
-    assert.equal(context.cvPath, path.join(uploaded.storageDir, 'CV-ui-funeraire.pdf'))
+    assert.equal(context.cvFileName, 'CV-ui-léna.pdf')
+    assert.equal(context.cvPath, path.join(uploaded.storageDir, 'CV-ui-léna.pdf'))
     assert.equal(context.applicationMail.firstName, 'UI')
-    assert.equal(context.applicationMail.lastName, 'Funeraire')
+    assert.equal(context.applicationMail.lastName, 'Lena')
     assert.equal(context.applicationMail.phone, '0600000003')
   })
 })
@@ -1584,7 +1600,7 @@ function jsonDb(data) {
 
 function setupCvForSpontaneous() {
   saveCvUpload({
-    originalName: 'CV Produit.pdf',
+    originalName: 'CV Adri.pdf',
     buffer: Buffer.from('%PDF-1.4 test'),
   })
   saveApplicationMailTemplate({
@@ -1630,12 +1646,14 @@ function withCvEnv(fn) {
   const previous = {
     CV_STORAGE_DIR: process.env.CV_STORAGE_DIR,
     CV_USER_PSEUDO: process.env.CV_USER_PSEUDO,
+    CANDIDATE_PROFILES_CONFIG: process.env.CANDIDATE_PROFILES_CONFIG,
     AUTH_USERNAME: process.env.AUTH_USERNAME,
     OPPORTUNITY_RADAR_PRIVATE_DIR: process.env.OPPORTUNITY_RADAR_PRIVATE_DIR,
   }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-cv-'))
   process.env.CV_STORAGE_DIR = path.join(dir, 'cv')
   process.env.CV_USER_PSEUDO = ''
+  process.env.CANDIDATE_PROFILES_CONFIG = path.join(dir, 'missing-profiles.json')
   process.env.AUTH_USERNAME = 'Adrien Test'
   delete process.env.OPPORTUNITY_RADAR_PRIVATE_DIR
   const cleanup = () => {
@@ -1661,30 +1679,30 @@ function withProfilesEnv(fn, { missingFuneralCv = false } = {}) {
     CANDIDATE_PROFILES_CONFIG: process.env.CANDIDATE_PROFILES_CONFIG,
   }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-profiles-'))
-  const produitCv = path.join(dir, 'CV-produit.pdf')
-  const funeralCv = path.join(dir, 'CV-funeraire.pdf')
-  fs.writeFileSync(produitCv, '%PDF-1.4 produit')
-  if (!missingFuneralCv) fs.writeFileSync(funeralCv, '%PDF-1.4 funeraire')
+  const adriCv = path.join(dir, 'CV-adri.pdf')
+  const lenaCv = path.join(dir, 'CV-lena.pdf')
+  fs.writeFileSync(adriCv, '%PDF-1.4 adri')
+  if (!missingFuneralCv) fs.writeFileSync(lenaCv, '%PDF-1.4 léna')
   const configPath = path.join(dir, 'profiles.json')
   fs.writeFileSync(configPath, `${JSON.stringify({
     profiles: [
       {
-        pseudo: 'produit',
+        pseudo: 'adri',
         firstName: 'Adrien',
-        lastName: 'Produit',
-        emailFrom: 'produit@example.test',
-        cvPath: produitCv,
+        lastName: 'Adri',
+        emailFrom: 'adri@example.test',
+        cvPath: adriCv,
         targetRoles: ['product owner', 'business analyst', 'chef de projet moa', 'consultant amoa', 'consultant moa'],
         excludedRoles: [],
         dailyQuota: 2,
       },
       {
-        pseudo: 'funeraire',
+        pseudo: 'léna',
         firstName: 'Adrien',
-        lastName: 'Funeraire',
-        emailFrom: 'funeraire@example.test',
+        lastName: 'Lena',
+        emailFrom: 'lena@example.test',
         smtpPrefix: 'SECOND',
-        cvPath: funeralCv,
+        cvPath: lenaCv,
         targetRoles: ['conseiller funeraire', 'assistant funeraire', 'funeraire', 'pompes funebres'],
         excludedRoles: ['maitre de ceremonie', 'porteur', 'chauffeur'],
         dailyQuota: 2,

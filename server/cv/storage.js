@@ -212,10 +212,9 @@ function isAllowedFile(fileName) {
 
 function sanitizeSegment(value) {
   const segment = String(value || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
+    .normalize('NFC')
+    .toLocaleLowerCase('fr-FR')
+    .replace(/[^\p{L}0-9._-]+/gu, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 60)
   return segment || 'adri'

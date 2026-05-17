@@ -1,14 +1,14 @@
 {
   "profiles": [
     {
-      "pseudo": "produit",
-      "label": "Profil Produit",
+      "pseudo": "adri",
+      "label": "Profil Adri",
       "firstName": "Prenom",
       "lastName": "Nom",
       "phone": "0600000000",
       "emailFrom": "prenom.nom@example.com",
       "smtpPrefix": "",
-      "cvPath": "./cv/produit/CV-produit.pdf",
+      "cvPath": "",
       "targetRoles": [
         "product owner",
         "business analyst",
@@ -24,14 +24,14 @@
       }
     },
     {
-      "pseudo": "funeraire",
-      "label": "Profil Funéraire",
+      "pseudo": "léna",
+      "label": "Profil Léna",
       "firstName": "Prenom",
       "lastName": "Nom",
       "phone": "0600000000",
       "emailFrom": "prenom.nom@example.com",
       "smtpPrefix": "SECOND",
-      "cvPath": "./cv/funeraire/CV-funeraire.pdf",
+      "cvPath": "",
       "targetRoles": [
         "conseiller funeraire",
         "conseiller funéraire",

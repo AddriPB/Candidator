@@ -4,8 +4,8 @@ import path from 'node:path'
 const DEFAULT_PROFILES_PATH = './config/candidate-profiles.local.json'
 
 export function loadCandidateProfiles({
-  configPath = process.env.CANDIDATE_PROFILES_CONFIG || DEFAULT_PROFILES_PATH,
   env = process.env,
+  configPath = env.CANDIDATE_PROFILES_CONFIG || process.env.CANDIDATE_PROFILES_CONFIG || DEFAULT_PROFILES_PATH,
 } = {}) {
   const resolved = path.resolve(configPath)
   if (!fs.existsSync(resolved)) return []
@@ -67,20 +67,25 @@ function normalizeProfile(profile, { index, env }) {
   const pseudo = sanitizeSegment(profile?.pseudo || profile?.user || profile?.id || `profil-${index + 1}`)
   if (!pseudo) return null
   const cvPath = String(profile?.cvPath || profile?.cv_path || '').trim()
+  const smtpPrefix = sanitizeEnvPrefix(profile?.smtpPrefix || profile?.smtp_prefix || profile?.smtpEnvPrefix || profile?.smtp_env_prefix || '')
   return {
     pseudo,
     label: String(profile?.label || profile?.name || pseudo).trim(),
     firstName: String(profile?.firstName || profile?.first_name || '').trim(),
     lastName: String(profile?.lastName || profile?.last_name || '').trim(),
     phone: String(profile?.phone || profile?.telephone || '').trim(),
-    emailFrom: String(profile?.emailFrom || profile?.email_from || env.APPLICATION_FROM || '').trim(),
-    smtpPrefix: sanitizeEnvPrefix(profile?.smtpPrefix || profile?.smtp_prefix || profile?.smtpEnvPrefix || profile?.smtp_env_prefix || ''),
+    emailFrom: String(profile?.emailFrom || profile?.email_from || prefixedEnv(env, smtpPrefix, 'APPLICATION_FROM') || prefixedEnv(env, smtpPrefix, 'MAIL_FROM') || env.APPLICATION_FROM || '').trim(),
+    smtpPrefix,
     cvPath,
     targetRoles: normalizeTerms(profile?.targetRoles || profile?.target_roles || profile?.metiers_cibles),
     excludedRoles: normalizeTerms(profile?.excludedRoles || profile?.excluded_roles || profile?.metiers_exclus),
     template: normalizeTemplate(profile?.template || profile?.mailTemplate || profile?.mail_template),
     dailyQuota: positiveInteger(profile?.dailyQuota || profile?.daily_quota || profile?.quota_jour, positiveInteger(env.APPLICATION_EMAIL_DAILY_LIMIT, 20)),
   }
+}
+
+function prefixedEnv(env, prefix, name) {
+  return prefix ? env[`${prefix}_${name}`] : ''
 }
 
 function normalizeTemplate(template = {}) {
@@ -119,7 +124,12 @@ function normalizeText(value) {
 }
 
 function sanitizeSegment(value) {
-  return normalizeText(value).replace(/\s+/g, '-').slice(0, 60)
+  return String(value || '')
+    .normalize('NFC')
+    .toLocaleLowerCase('fr-FR')
+    .replace(/[^\p{L}0-9._-]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60)
 }
 
 function sanitizeEnvPrefix(value) {
