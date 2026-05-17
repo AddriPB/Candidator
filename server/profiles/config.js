@@ -52,6 +52,8 @@ export function profilePublicSummary(profile) {
   return {
     pseudo: profile.pseudo,
     label: profile.label || profile.pseudo,
+    automaticOfferApplicationsEnabled: profile.automaticOfferApplicationsEnabled,
+    automaticSpontaneousApplicationsEnabled: profile.automaticSpontaneousApplicationsEnabled,
     firstName: Boolean(profile.firstName),
     lastName: Boolean(profile.lastName),
     emailFrom: maskEmail(profile.emailFrom),
@@ -61,6 +63,36 @@ export function profilePublicSummary(profile) {
     excludedRoles: profile.excludedRoles,
     dailyQuota: profile.dailyQuota,
   }
+}
+
+export function updateCandidateProfileAutomaticApplications(pseudo, enabled, {
+  type = 'offer',
+  env = process.env,
+  configPath = env.CANDIDATE_PROFILES_CONFIG || process.env.CANDIDATE_PROFILES_CONFIG || DEFAULT_PROFILES_PATH,
+} = {}) {
+  const targetPseudo = sanitizeSegment(pseudo)
+  if (!targetPseudo) throw statusError(400, 'profil_manquant')
+
+  const resolved = path.resolve(configPath)
+  if (!fs.existsSync(resolved)) throw statusError(404, 'configuration_profils_introuvable')
+
+  const raw = JSON.parse(fs.readFileSync(resolved, 'utf8'))
+  const profiles = Array.isArray(raw?.profiles) ? raw.profiles : Array.isArray(raw) ? raw : []
+  const index = profiles.findIndex((profile, profileIndex) => {
+    const currentPseudo = sanitizeSegment(profile?.pseudo || profile?.user || profile?.id || `profil-${profileIndex + 1}`)
+    return currentPseudo === targetPseudo
+  })
+  if (index < 0) throw statusError(404, 'profil_introuvable')
+
+  const field = automaticApplicationField(type)
+  profiles[index] = {
+    ...profiles[index],
+    [field]: Boolean(enabled),
+  }
+
+  const next = Array.isArray(raw?.profiles) ? { ...raw, profiles } : profiles
+  fs.writeFileSync(resolved, `${JSON.stringify(next, null, 2)}\n`)
+  return profilePublicSummary(normalizeProfile(profiles[index], { index, env }))
 }
 
 function normalizeProfile(profile, { index, env }) {
@@ -78,9 +110,19 @@ function normalizeProfile(profile, { index, env }) {
     smtpPrefix,
     cvPath,
     targetRoles: normalizeTerms(profile?.targetRoles || profile?.target_roles || profile?.metiers_cibles),
+    targetRoleLabels: normalizeLabels(profile?.targetRoles || profile?.target_roles || profile?.metiers_cibles),
     excludedRoles: normalizeTerms(profile?.excludedRoles || profile?.excluded_roles || profile?.metiers_exclus),
     template: normalizeTemplate(profile?.template || profile?.mailTemplate || profile?.mail_template),
+    spontaneousTemplate: normalizeTemplate(profile?.spontaneousTemplate || profile?.spontaneous_template || profile?.mailSpontane || profile?.mail_spontane),
     dailyQuota: positiveInteger(profile?.dailyQuota || profile?.daily_quota || profile?.quota_jour, positiveInteger(env.APPLICATION_EMAIL_DAILY_LIMIT, 20)),
+    automaticOfferApplicationsEnabled: normalizeBoolean(
+      profile?.automaticOfferApplicationsEnabled ?? profile?.automatic_offer_applications_enabled,
+      false,
+    ),
+    automaticSpontaneousApplicationsEnabled: normalizeBoolean(
+      profile?.automaticSpontaneousApplicationsEnabled ?? profile?.automatic_spontaneous_applications_enabled,
+      false,
+    ),
   }
 }
 
@@ -121,6 +163,12 @@ function normalizeTerms(values) {
     .filter(Boolean)
 }
 
+function normalizeLabels(values) {
+  return (Array.isArray(values) ? values : [])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+}
+
 function normalizeText(value) {
   return String(value || '')
     .normalize('NFD')
@@ -152,9 +200,28 @@ function positiveInteger(value, fallback) {
   return Number.isInteger(number) && number > 0 ? number : fallback
 }
 
+function normalizeBoolean(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback
+  if (typeof value === 'boolean') return value
+  return !['false', '0', 'no', 'non', 'off'].includes(String(value).trim().toLowerCase())
+}
+
+function automaticApplicationField(type) {
+  const value = String(type || '').trim().toLowerCase()
+  if (value === 'offer' || value === 'offers' || value === 'job_offer_application') return 'automaticOfferApplicationsEnabled'
+  if (value === 'spontaneous' || value === 'spontaneous_application') return 'automaticSpontaneousApplicationsEnabled'
+  throw statusError(400, 'type_candidature_invalide')
+}
+
 function maskEmail(value) {
   const text = String(value || '').trim()
   const [local, domain] = text.split('@')
   if (!local || !domain) return text ? 'renseigné' : ''
   return `${local.slice(0, 2)}***@${domain}`
+}
+
+function statusError(status, message) {
+  const error = new Error(message)
+  error.status = status
+  return error
 }

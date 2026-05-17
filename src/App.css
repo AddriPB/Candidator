@@ -133,6 +133,12 @@ h1 {
   text-align: left;
 }
 
+.profile-controls {
+  display: grid;
+  gap: 8px;
+  min-width: min(100%, 300px);
+}
+
 .profile-selector span {
   color: #5d6a61;
   font-size: 0.75rem;
@@ -144,6 +150,83 @@ h1 {
   min-height: 38px;
   padding: 8px 10px;
   font-weight: 800;
+}
+
+.toggle-row {
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: #344139;
+  font-weight: 700;
+}
+
+.toggle-row input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toggle-track {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  border: 1px solid #adb8a6;
+  border-radius: 999px;
+  background: #e8ece4;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.toggle-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(24, 33, 27, 0.25);
+  transition: transform 160ms ease;
+}
+
+.toggle-row input:checked + .toggle-track {
+  border-color: #1f7a55;
+  background: #1f7a55;
+}
+
+.toggle-row input:checked + .toggle-track .toggle-thumb {
+  transform: translateX(18px);
+}
+
+.toggle-row input:focus-visible + .toggle-track {
+  outline: 3px solid rgba(31, 122, 85, 0.25);
+  outline-offset: 2px;
+}
+
+.toggle-row strong,
+.toggle-row small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.toggle-row strong {
+  font-size: 0.9rem;
+}
+
+.toggle-row small {
+  color: #5d6a61;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.profile-toggle-error {
+  border: 1px solid #d6a1a1;
+  border-radius: 8px;
+  background: #fff6f6;
+  color: #8c2f2f;
+  padding: 8px 10px;
+  font-size: 0.86rem;
+  font-weight: 800;
+  line-height: 1.4;
 }
 
 p {
@@ -550,6 +633,7 @@ label {
   }
 
   .profile-badge,
+  .profile-controls,
   .profile-selector {
     width: 100%;
     min-width: 0;

@@ -46,6 +46,8 @@ export default function App() {
   const [cvError, setCvError] = useState('')
   const [cvUploading, setCvUploading] = useState(false)
   const [selectedProfile, setSelectedProfile] = useState(readSelectedProfile())
+  const [profileToggleLoading, setProfileToggleLoading] = useState(false)
+  const [profileToggleError, setProfileToggleError] = useState('')
 
   const api = useMemo(() => createApi(API_BASE), [])
   const roleFilteredOffers = useMemo(
@@ -263,6 +265,28 @@ export default function App() {
     }
   }
 
+  async function setAutomaticApplicationsEnabled(profilePseudo, type, enabled) {
+    const pseudo = String(profilePseudo || '').trim()
+    if (!pseudo) return
+    setProfileToggleLoading(true)
+    setProfileToggleError('')
+    try {
+      const profile = await api(`/api/profiles/${encodeURIComponent(pseudo)}/automatic-applications`, {
+        method: 'POST',
+        body: JSON.stringify({ type, enabled }),
+      })
+      setProfileState((current) => updateProfileSummary(current, profile))
+      const label = type === 'spontaneous' ? 'candidatures spontanées' : 'candidatures sur offres'
+      setMessage(enabled ? `Envoi automatique activé pour les ${label}.` : `Envoi automatique désactivé pour les ${label}.`)
+      if (view === 'test') loadHealthcheck()
+    } catch (error) {
+      if (handleAuthError(error)) return
+      setProfileToggleError(apiErrorMessage(error, 'Impossible de modifier l’envoi automatique.'))
+    } finally {
+      setProfileToggleLoading(false)
+    }
+  }
+
   function handleAuthError(error) {
     if (!(error instanceof ApiError) || error.status !== 401) return false
     clearSessionToken()
@@ -288,6 +312,7 @@ export default function App() {
     setOffersError('')
     setCvError('')
     setHealthError('')
+    setProfileToggleError('')
     saveSelectedProfile(value)
   }
 
@@ -300,9 +325,12 @@ export default function App() {
           <h1>Opportunity Radar</h1>
           {authenticated && (
             <ProfileSelector
+              error={profileToggleError}
+              loading={profileToggleLoading}
               profileState={profileState}
               selectedProfile={selectedProfile}
               onSelectProfile={updateSelectedProfile}
+              onToggleAutomaticApplications={setAutomaticApplicationsEnabled}
             />
           )}
         </div>
@@ -386,26 +414,47 @@ export default function App() {
   )
 }
 
-function ProfileSelector({ profileState, selectedProfile, onSelectProfile }) {
+function ProfileSelector({ error, loading, profileState, selectedProfile, onSelectProfile, onToggleAutomaticApplications }) {
   const profiles = profileState?.mode === 'multi' ? profileState.profiles || [] : []
   const selected = profileState?.mode === 'multi'
     ? profiles.find((profile) => profile.pseudo === selectedProfile)
     : null
   const active = selected || profileState?.active
   const label = active?.label || active?.pseudo || 'profil historique'
+  const automaticOfferApplicationsEnabled = active?.automaticOfferApplicationsEnabled === true
+  const automaticSpontaneousApplicationsEnabled = active?.automaticSpontaneousApplicationsEnabled === true
 
   if (profiles.length > 0) {
     return (
-      <label className="profile-selector" title="Profil candidat appliqué à tous les écrans">
-        <span>Profil actif</span>
-        <select value={selectedProfile} onChange={(event) => onSelectProfile(event.target.value)}>
-          {profiles.map((profile) => (
-            <option key={profile.pseudo} value={profile.pseudo}>
-              {profile.label || profile.pseudo}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="profile-controls">
+        <label className="profile-selector" title="Profil candidat appliqué à tous les écrans">
+          <span>Profil actif</span>
+          <select value={selectedProfile} onChange={(event) => onSelectProfile(event.target.value)}>
+            {profiles.map((profile) => (
+              <option key={profile.pseudo} value={profile.pseudo}>
+                {profile.label || profile.pseudo}
+              </option>
+            ))}
+          </select>
+        </label>
+        <ApplicationToggle
+          checked={automaticOfferApplicationsEnabled}
+          disabled={loading}
+          label="Offres"
+          offText="Offres désactivées"
+          onText="Offres actives"
+          onChange={(enabled) => onToggleAutomaticApplications(selectedProfile, 'offer', enabled)}
+        />
+        <ApplicationToggle
+          checked={automaticSpontaneousApplicationsEnabled}
+          disabled={loading}
+          label="Spontanées"
+          offText="Spontanées désactivées"
+          onText="Spontanées actives"
+          onChange={(enabled) => onToggleAutomaticApplications(selectedProfile, 'spontaneous', enabled)}
+        />
+        {error && <div className="profile-toggle-error">{error}</div>}
+      </div>
     )
   }
 
@@ -415,6 +464,36 @@ function ProfileSelector({ profileState, selectedProfile, onSelectProfile }) {
       <strong>{label}</strong>
     </div>
   )
+}
+
+function ApplicationToggle({ checked, disabled, label, offText, onChange, onText }) {
+  return (
+    <label className="toggle-row" title={`${checked ? 'Désactive' : 'Active'} l’envoi automatique : ${label}`}>
+      <input
+        checked={checked}
+        disabled={disabled}
+        type="checkbox"
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      <span className="toggle-track" aria-hidden="true">
+        <span className="toggle-thumb" />
+      </span>
+      <span>
+        <strong>{checked ? onText : offText}</strong>
+        <small>{checked ? 'Le bot peut envoyer.' : 'Le bot n’envoie pas.'}</small>
+      </span>
+    </label>
+  )
+}
+
+function updateProfileSummary(profileState, nextProfile) {
+  if (profileState?.mode !== 'multi') return profileState
+  return {
+    ...profileState,
+    profiles: (profileState.profiles || []).map((profile) => (
+      profile.pseudo === nextProfile.pseudo ? { ...profile, ...nextProfile } : profile
+    )),
+  }
 }
 
 function OffersScreen({
@@ -536,6 +615,7 @@ function TestScreen({
   testEmailResult,
 }) {
   const [testEmailTo, setTestEmailTo] = useState('')
+  const testEmailDisabled = testEmailLoading || !testEmailTo.trim() || health?.applications?.profileOfferAutomaticEnabled === false
 
   function submitTestEmail(event) {
     event.preventDefault()
@@ -572,6 +652,9 @@ function TestScreen({
             <span>Téléphone : {health.identity?.phone ? 'OK' : 'manquant'}</span>
           </HealthCard>
           <HealthCard title="Candidatures" ok={health.applications?.dailyEnabled}>
+            <span>Offres : {health.applications?.profileOfferAutomaticEnabled ? 'actif' : 'désactivé'}</span>
+            <span>Spontanées : {health.applications?.profileSpontaneousAutomaticEnabled ? 'actif' : 'désactivé'}</span>
+            <span>Global : {health.applications?.globalDailyEnabled === false ? 'désactivé' : 'actif'}</span>
             <span>Mode : {health.applications?.deliveryMode || '-'}</span>
             <span>Redirection : {health.applications?.redirectTo || '-'}</span>
             <span>{health.applications?.offersWithEmail || 0} offre(s) avec email</span>
@@ -592,10 +675,13 @@ function TestScreen({
             onChange={(event) => setTestEmailTo(event.target.value)}
           />
         </label>
-        <button type="submit" disabled={testEmailLoading || !testEmailTo.trim()}>
+        <button type="submit" disabled={testEmailDisabled}>
           {testEmailLoading ? 'Envoi...' : 'Envoyer'}
         </button>
       </form>
+      {health?.applications?.profileOfferAutomaticEnabled === false && (
+        <div className="notice">Mail test désactivé pour ce profil tant que l’envoi automatique sur offres est coupé.</div>
+      )}
       {testEmailError && <div className="error">{testEmailError}</div>}
       {testEmailResult && (
         <div className="notice">

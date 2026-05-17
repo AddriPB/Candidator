@@ -9,7 +9,7 @@ import { evaluateOffer } from '../server/radar/filter.js'
 import { normalizeOffer } from '../server/radar/normalizer.js'
 import { scoreOffer } from '../server/radar/scorer.js'
 import { loginHandler, requireAuth } from '../server/auth/index.js'
-import { buildApplicationContextFromProfile, buildApplicationMessage, sendDailyApplicationEmails } from '../server/applications/emailer.js'
+import { buildApplicationContextFromProfile, buildApplicationMessage, sendApplicationTestEmail, sendDailyApplicationEmails } from '../server/applications/emailer.js'
 import { classifyApplicationType } from '../server/applications/templates.js'
 import { buildSpontaneousApplicationMessage, sendDailySpontaneousApplications } from '../server/applications/spontaneous.js'
 import { buildEsnDiscoveryOffers, buildWebDiscoveryOffers, discoverContactsForOffer, discoverEsnRecruiterContacts, discoverWebRecruiterContacts, extractMailtoEmails, inferRecruiterLocals } from '../server/applications/contactDiscovery.js'
@@ -18,7 +18,7 @@ import { cvPseudo, getCvState, saveApplicationMailTemplate, saveCvUpload, setAct
 import { getAllApplicationContacts, getApplicationContacts, getApplicationEmailEligibleOffers, getApplicationOpportunities, getLatestRadarOffers, openDatabase, saveRadarRun, saveSourceCheckLogs } from '../server/storage/database.js'
 import { nightlyRunSucceeded, recordNightlyAttempt, shouldRunNightlyRadar } from '../server/radar/nightlySchedule.js'
 import { isQuotaReachedError, QUOTA_REACHED_CODE } from '../server/radar/adapters/jsearch.js'
-import { loadCandidateProfiles, selectCandidateProfile } from '../server/profiles/config.js'
+import { loadCandidateProfiles, selectCandidateProfile, updateCandidateProfileAutomaticApplications } from '../server/profiles/config.js'
 import { applyProfileRules } from '../server/radar/pipeline.js'
 
 process.env.CANDIDATE_PROFILES_CONFIG = path.join(os.tmpdir(), 'opportunity-radar-test-missing-profiles.json')
@@ -1327,6 +1327,34 @@ test('candidatures spontanees: bloque le mode test sans redirection explicite', 
   })
 })
 
+test('candidatures spontanees: ignore un profil desactive', async () => {
+  await withProfilesEnv(async (configPath) => {
+    updateCandidateProfileAutomaticApplications('adri', false, { configPath, type: 'spontaneous' })
+    const db = jsonDb({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [], applicationContacts: [] })
+    const sent = []
+
+    const summary = await sendDailySpontaneousApplications({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: {
+        APPLICATION_EMAIL_DELIVERY_MODE: 'live',
+        CANDIDATE_PROFILES_CONFIG: configPath,
+      },
+      mailer: async (message) => {
+        sent.push(message)
+        return { messageId: 'message-1' }
+      },
+      logger: silentLogger(),
+      offers: [offer({ id: 'spontaneous:disabled', company: 'Acme', emails: ['rh@acme.fr'] })],
+    })
+
+    assert.equal(summary.sent, 0)
+    assert.equal(summary.skipped >= 1, true)
+    assert.equal(sent.length, 0)
+    assert.equal(summary.results.some((row) => row.skipReason === 'profile_automatic_spontaneous_applications_disabled' && row.profilePseudo === 'adri'), true)
+  })
+})
+
 test('candidatures spontanees: stop apres un succes et logge le type', async () => {
   await withCvEnv(async () => {
     setupCvForSpontaneous()
@@ -1513,6 +1541,38 @@ test('candidatures spontanees: mail sans URL offre et contenu attendu', () => {
   assert.match(message.text, /Adrien Pujol/)
 })
 
+test('candidatures spontanees: envoie separement pour chaque profil cible', async () => {
+  await withProfilesEnv(async (configPath) => {
+    const db = jsonDb({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [], applicationContacts: [] })
+    const sent = []
+    const summary = await sendDailySpontaneousApplications({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: {
+        APPLICATION_EMAIL_DELIVERY_MODE: 'live',
+        CANDIDATE_PROFILES_CONFIG: configPath,
+      },
+      mailer: async (message) => {
+        sent.push(message)
+        return { messageId: `message-${sent.length}` }
+      },
+      logger: silentLogger(),
+      offers: [
+        offer({ id: 'spontaneous:po', title: 'Product Owner H/F', company: 'Acme Product', emails: ['po@acme.example'] }),
+        offer({ id: 'spontaneous:funeral', title: 'Conseiller funéraire H/F', company: 'Pompes Exemple', emails: ['rh@funeraire.example'] }),
+      ],
+    })
+
+    assert.equal(summary.sent, 2)
+    assert.deepEqual(summary.results.filter((row) => row.status === 'sent_pending_delivery').map((row) => row.profilePseudo), ['adri', 'léna'])
+    assert.deepEqual(sent.map((message) => message.to), ['po@acme.example', 'rh@funeraire.example'])
+    assert.equal(sent[0].attachments[0].filename, 'CV-adri.pdf')
+    assert.equal(sent[1].attachments[0].filename, 'CV-lena.pdf')
+    assert.match(sent[0].text, /product owner/i)
+    assert.match(sent[1].text, /funeraire/i)
+  })
+})
+
 test('candidatures spontanees: ne renvoie pas a un email deja envoye', async () => {
   await withCvEnv(async () => {
     setupCvForSpontaneous()
@@ -1568,6 +1628,87 @@ test('profils candidats: choisit le profil selon le metier et respecte les exclu
     assert.equal(selectCandidateProfile(offer({ title: 'Conseiller / Conseillère funéraire H/F' }), profiles).pseudo, 'léna')
     assert.equal(selectCandidateProfile(offer({ title: 'Conseiller funéraire H/F', description: 'Un métier porteur de sens.' }), profiles).pseudo, 'léna')
     assert.equal(selectCandidateProfile(offer({ title: 'Maître de cérémonie funéraire H/F' }), profiles), null)
+  })
+})
+
+test('profils candidats: desactive par defaut les deux envois automatiques', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-profile-defaults-'))
+  const configPath = path.join(dir, 'profiles.json')
+  fs.writeFileSync(configPath, `${JSON.stringify({ profiles: [{ pseudo: 'adri' }] }, null, 2)}\n`)
+  try {
+    const profile = loadCandidateProfiles({ configPath })[0]
+    assert.equal(profile.automaticOfferApplicationsEnabled, false)
+    assert.equal(profile.automaticSpontaneousApplicationsEnabled, false)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('profils candidats: persiste les toggles d envoi automatique', () => {
+  withProfilesEnv((configPath) => {
+    const offerDisabled = updateCandidateProfileAutomaticApplications('adri', false, { configPath, type: 'offer' })
+    assert.equal(offerDisabled.automaticOfferApplicationsEnabled, false)
+    assert.equal(offerDisabled.automaticSpontaneousApplicationsEnabled, true)
+
+    const spontaneousDisabled = updateCandidateProfileAutomaticApplications('adri', false, { configPath, type: 'spontaneous' })
+    assert.equal(spontaneousDisabled.automaticOfferApplicationsEnabled, false)
+    assert.equal(spontaneousDisabled.automaticSpontaneousApplicationsEnabled, false)
+
+    const offerEnabled = updateCandidateProfileAutomaticApplications('adri', true, { configPath, type: 'offer' })
+    assert.equal(offerEnabled.automaticOfferApplicationsEnabled, true)
+    assert.equal(loadCandidateProfiles({ configPath }).find((profile) => profile.pseudo === 'adri').automaticOfferApplicationsEnabled, true)
+  })
+})
+
+test('profils candidats: ignore les candidatures automatiques d un profil desactive', async () => {
+  await withProfilesEnv(async (configPath) => {
+    updateCandidateProfileAutomaticApplications('adri', false, { configPath, type: 'offer' })
+    const db = jsonDb({ sourceChecks: [], radarRuns: [], offerEmails: [], applicationEmailSends: [], applicationContacts: [] })
+    const sent = []
+    const summary = await sendDailyApplicationEmails({
+      db,
+      now: new Date('2026-05-14T08:00:00.000Z'),
+      env: {
+        APPLICATION_EMAIL_DELIVERY_MODE: 'live',
+        CANDIDATE_PROFILES_CONFIG: configPath,
+      },
+      mailer: async (message) => {
+        sent.push(message)
+        return { messageId: 'message-1' }
+      },
+      logger: silentLogger(),
+      offers: [
+        offer({ id: 'profile:disabled', title: 'Product Owner H/F', emails: ['rh@example.test'] }),
+      ],
+    })
+
+    assert.equal(summary.sent, 0)
+    assert.equal(summary.skipped, 1)
+    assert.equal(sent.length, 0)
+    assert.equal(summary.results[0].reason, 'profile_automatic_offer_applications_disabled')
+    assert.equal(summary.results[0].profilePseudo, 'adri')
+  })
+})
+
+test('profils candidats: bloque le mail test si les candidatures offres sont desactivees', async () => {
+  await withProfilesEnv(async (configPath) => {
+    updateCandidateProfileAutomaticApplications('adri', false, { configPath, type: 'offer' })
+    const sent = []
+
+    await assert.rejects(
+      () => sendApplicationTestEmail({
+        to: 'capture@example.test',
+        profilePseudo: 'adri',
+        env: { CANDIDATE_PROFILES_CONFIG: configPath },
+        mailer: async (message) => {
+          sent.push(message)
+          return { messageId: 'message-1' }
+        },
+      }),
+      /profile_automatic_offer_applications_disabled/,
+    )
+
+    assert.equal(sent.length, 0)
   })
 })
 
@@ -1803,6 +1944,8 @@ function withProfilesEnv(fn, { missingFuneralCv = false } = {}) {
         lastName: 'Adri',
         emailFrom: 'adri@example.test',
         cvPath: adriCv,
+        automaticOfferApplicationsEnabled: true,
+        automaticSpontaneousApplicationsEnabled: true,
         targetRoles: ['product owner', 'business analyst', 'chef de projet moa', 'consultant amoa', 'consultant moa'],
         excludedRoles: [],
         dailyQuota: 2,
@@ -1814,6 +1957,8 @@ function withProfilesEnv(fn, { missingFuneralCv = false } = {}) {
         emailFrom: 'lena@example.test',
         smtpPrefix: 'SECOND',
         cvPath: lenaCv,
+        automaticOfferApplicationsEnabled: true,
+        automaticSpontaneousApplicationsEnabled: true,
         targetRoles: ['conseiller funeraire', 'assistant funeraire', 'funeraire', 'pompes funebres'],
         excludedRoles: ['maitre de ceremonie', 'porteur', 'chauffeur'],
         dailyQuota: 2,

@@ -7,7 +7,7 @@ import { getAuthDiagnostics, loginHandler, logoutHandler, meHandler, requireAuth
 import { checkSources } from './connectors/sourceChecks.js'
 import { cvDownloadPath, getCvState, saveApplicationMailTemplate, saveCvUpload, setActiveCv } from './cv/storage.js'
 import { assertSmtpConfig } from './email/smtp.js'
-import { loadCandidateProfiles, profilePublicSummary, selectCandidateProfile } from './profiles/config.js'
+import { loadCandidateProfiles, profilePublicSummary, selectCandidateProfile, updateCandidateProfileAutomaticApplications } from './profiles/config.js'
 import { getApplicationEmailEligibleOffers, getApplicationEmailSends, getLatestApplicationCandidateOffers, getLatestSourceChecks, getOfferEmailStats, openDatabase, pruneOldData, saveSourceCheckLogs } from './storage/database.js'
 import { stableHash } from './radar/hash.js'
 
@@ -80,6 +80,14 @@ app.get('/api/profiles', requireAuth, (_req, res) => {
   })
 })
 
+app.post('/api/profiles/:pseudo/automatic-applications', requireAuth, (req, res, next) => {
+  try {
+    res.json(updateCandidateProfileAutomaticApplications(req.params.pseudo, req.body?.enabled, { type: req.body?.type }))
+  } catch (error) {
+    next(error)
+  }
+})
+
 app.get('/api/test/healthcheck', requireAuth, (req, res) => {
   const profiles = loadCandidateProfiles()
   const profilePseudo = reqProfilePseudo(req)
@@ -90,6 +98,9 @@ app.get('/api/test/healthcheck', requireAuth, (req, res) => {
   const stats = getOfferEmailStats(db)
   const offerState = getOffersScreenState(db, { profilePseudo })
   const profileScopedOffers = profile ? offerState.offers : null
+  const globalDailyEnabled = process.env.APPLICATION_EMAIL_DAILY_ENABLED !== 'false'
+  const profileOfferAutomaticEnabled = profile?.automaticOfferApplicationsEnabled === true
+  const profileSpontaneousAutomaticEnabled = profile?.automaticSpontaneousApplicationsEnabled === true
   const offersWithEmail = profileScopedOffers
     ? profileScopedOffers.filter((offer) => Array.isArray(offer.emails) && offer.emails.length > 0).length
     : stats.offersWithEmail
@@ -123,7 +134,10 @@ app.get('/api/test/healthcheck', requireAuth, (req, res) => {
       phone: Boolean(applicationMail.phone),
     },
     applications: {
-      dailyEnabled: process.env.APPLICATION_EMAIL_DAILY_ENABLED !== 'false',
+      dailyEnabled: globalDailyEnabled && profileOfferAutomaticEnabled,
+      globalDailyEnabled,
+      profileOfferAutomaticEnabled,
+      profileSpontaneousAutomaticEnabled,
       deliveryMode: process.env.APPLICATION_EMAIL_DELIVERY_MODE || 'live',
       redirectTo: process.env.APPLICATION_EMAIL_REDIRECT_TO || '',
       blockMonths: Number(process.env.APPLICATION_EMAIL_BLOCK_MONTHS || 12),

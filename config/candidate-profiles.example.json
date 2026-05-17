@@ -9,6 +9,8 @@
       "emailFrom": "prenom.nom@example.com",
       "smtpPrefix": "",
       "cvPath": "",
+      "automaticOfferApplicationsEnabled": false,
+      "automaticSpontaneousApplicationsEnabled": false,
       "targetRoles": [
         "product owner",
         "business analyst",
@@ -21,6 +23,10 @@
       "template": {
         "subject": "Candidature : [Intitulé du poste]",
         "body": "Bonjour,\n\nJe vous adresse ma candidature pour le poste de [Intitulé du poste].\n\nOffre concernée : [URL de l’offre]\n\n[Angle candidature]\n\nVous trouverez mon CV en pièce jointe.\n\nBien cordialement,\n[Prénom Nom]"
+      },
+      "spontaneousTemplate": {
+        "subject": "Candidature spontanée",
+        "body": "Bonjour,\n\nJe vous adresse ma candidature spontanée pour des postes de [Postes cibles].\n\nVous trouverez mon CV en pièce jointe. Je suis disponible pour échanger par téléphone afin de vous présenter mon profil.\n\nVous pouvez me joindre au [Téléphone].\n\nBien cordialement,\n[Prénom Nom]"
       }
     },
     {
@@ -32,6 +38,8 @@
       "emailFrom": "prenom.nom@example.com",
       "smtpPrefix": "SECOND",
       "cvPath": "",
+      "automaticOfferApplicationsEnabled": false,
+      "automaticSpontaneousApplicationsEnabled": false,
       "targetRoles": [
         "conseiller funeraire",
         "conseiller funéraire",
@@ -52,6 +60,10 @@
       "template": {
         "subject": "Candidature : [Intitulé du poste]",
         "body": "Bonjour,\n\nJe vous adresse ma candidature pour le poste de [Intitulé du poste].\n\nOffre concernée : [URL de l’offre]\n\n[Angle candidature]\n\nVous trouverez mon CV en pièce jointe.\n\nBien cordialement,\n[Prénom Nom]"
+      },
+      "spontaneousTemplate": {
+        "subject": "Candidature spontanée",
+        "body": "Bonjour,\n\nJe vous adresse ma candidature spontanée pour des postes de [Postes cibles].\n\nVous trouverez mon CV en pièce jointe. Je suis disponible pour échanger par téléphone afin de vous présenter mon profil.\n\nVous pouvez me joindre au [Téléphone].\n\nBien cordialement,\n[Prénom Nom]"
       }
     }
   ]

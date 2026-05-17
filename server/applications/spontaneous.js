@@ -1,6 +1,6 @@
 import { sendEmail } from '../email/smtp.js'
 import { getCvState } from '../cv/storage.js'
-import { loadCandidateProfiles } from '../profiles/config.js'
+import { loadCandidateProfiles, selectCandidateProfile } from '../profiles/config.js'
 import { buildEsnDiscoveryOffers, buildWebDiscoveryOffers, discoverContactsForOffer, discoverEsnRecruiterContacts, discoverWebRecruiterContacts, isValidContactEmail, normalizeEmail } from './contactDiscovery.js'
 import {
   getAllApplicationContacts,
@@ -50,17 +50,13 @@ export async function sendDailySpontaneousApplications({
   if (!db) throw new Error('Base de donnees manquante.')
 
   const profiles = loadCandidateProfiles({ env })
-  const profile = profiles[0] || null
-  const context = profile ? buildApplicationContextFromProfile(profile) : buildApplicationContext(getCvState())
+  const contexts = profiles.length
+    ? profiles.map((profile) => ({ profile, context: buildApplicationContextFromProfile(profile) }))
+    : [{ profile: null, context: buildApplicationContext(getCvState()) }]
   const sendWindow = spontaneousSendWindow(now, env)
   const source = offers ? { startedAt, offers } : getApplicationCandidateOffers(db, { now })
   const since = new Date(now.getTime() - positiveInteger(env.APPLICATION_EMAIL_BLOCK_MONTHS, 12) * 31 * 24 * 60 * 60 * 1000).toISOString()
   const allSends = getApplicationEmailSends(db, { since })
-  const spontaneousSends = allSends.filter((row) => row.actionType === SPONTANEOUS_APPLICATION)
-  const daySends = spontaneousSends.filter((row) => sameLocalDay(row.sentAt, now, spontaneousTimezone(env)))
-  const successfulEmails = new Set(spontaneousSends.filter((row) => SUCCESS_STATUSES.has(row.status)).map((row) => normalizeEmail(row.contactEmail || row.originalTo)))
-  const successToday = daySends.some((row) => SUCCESS_STATUSES.has(row.status))
-  const failuresToday = daySends.filter((row) => row.status === 'failed' || row.status === 'invalid').length
 
   const summary = {
     startedAt: source.startedAt || null,
@@ -72,118 +68,138 @@ export async function sendDailySpontaneousApplications({
   }
 
   if (!sendWindow.allowed) {
-    return stopWithSkip({ db, summary, now, reason: sendWindow.reason, dailyStopReason: sendWindow.reason, logger })
+    return stopAllWithSkip({ db, summary, now, reason: sendWindow.reason, dailyStopReason: sendWindow.reason, logger, contexts })
   }
 
   const delivery = applicationDeliveryCheck(env)
   if (!delivery.allowed) {
-    return stopWithSkip({ db, summary, now, reason: delivery.reason, dailyStopReason: delivery.reason, logger })
+    return stopAllWithSkip({ db, summary, now, reason: delivery.reason, dailyStopReason: delivery.reason, logger, contexts })
   }
 
-  if (!context.ready) {
-    return stopWithSkip({ db, summary, now, reason: context.reason, dailyStopReason: context.reason, logger })
-  }
+  for (const { profile, context } of contexts) {
+    const spontaneousSends = allSends
+      .filter((row) => row.actionType === SPONTANEOUS_APPLICATION)
+      .filter((row) => !profiles.length || String(row.profilePseudo || '') === String(context.profilePseudo || ''))
+    const daySends = spontaneousSends.filter((row) => sameLocalDay(row.sentAt, now, spontaneousTimezone(env)))
+    const successfulEmails = new Set(spontaneousSends.filter((row) => SUCCESS_STATUSES.has(row.status)).map((row) => normalizeEmail(row.contactEmail || row.originalTo)))
+    const successToday = daySends.some((row) => SUCCESS_STATUSES.has(row.status))
+    const failuresToday = daySends.filter((row) => row.status === 'failed' || row.status === 'invalid').length
 
-  if (successToday) {
-    return stopWithSkip({ db, summary, now, reason: 'daily_success_already_reached', dailyStopReason: 'stop_after_1_success', logger })
-  }
-
-  if (failuresToday >= 3) {
-    return stopWithSkip({ db, summary, now, reason: 'daily_failure_cap_reached', dailyStopReason: 'stop_after_3_failures', logger })
-  }
-
-  const targets = await collectSpontaneousTargets({ db, offers: source.offers, env, config, contactFetcher, now, profilePseudo: context.profilePseudo })
-  summary.candidates = targets.length
-  let attemptOfDay = failuresToday
-
-  while (attemptOfDay < 3) {
-    const target = chooseSpontaneousTarget({ targets, successfulEmails, spontaneousSends, now, env })
-    if (!target) {
-      summary.skipped += 1
-      summary.results.push(buildSpontaneousLog({
-        now,
-        target: null,
-        status: 'skipped',
-        reason: 'no_contact_available',
-        attemptOfDay,
-      }))
-      break
+    if (profile && profile.automaticSpontaneousApplicationsEnabled !== true) {
+      stopWithSkip({ db, summary, now, reason: 'profile_automatic_spontaneous_applications_disabled', dailyStopReason: 'profile_automatic_spontaneous_applications_disabled', profilePseudo: profile.pseudo, logger })
+      continue
     }
 
-    attemptOfDay += 1
-    const sentAt = now.toISOString()
-    const attemptId = buildAttemptId({ offerKey: target.key, email: target.email, now })
-    const sentTo = applicationRecipient([target.email], env)
-    const bounceAddress = buildBounceAddress(attemptId, env)
-    const message = buildSpontaneousApplicationMessage({ context })
-    const sendEnv = buildApplicationSmtpEnv(context, env)
+    if (!context.ready) {
+      stopWithSkip({ db, summary, now, reason: context.reason, dailyStopReason: context.reason, logger, profilePseudo: context.profilePseudo })
+      continue
+    }
 
-    try {
-      const result = await mailer({
-        to: sentTo,
-        subject: message.subject,
-        text: message.text,
-        attachments: [
-          {
-            filename: context.cvFileName,
-            path: context.cvPath,
-          },
-        ],
-        ...(bounceAddress ? {
-          envelope: { from: bounceAddress, to: Array.isArray(sentTo) ? sentTo : [sentTo] },
-          dsn: { id: attemptId, return: 'headers', notify: ['failure', 'delay'], recipient: target.email },
-        } : {}),
-      }, sendEnv)
+    if (successToday) {
+      stopWithSkip({ db, summary, now, reason: 'daily_success_already_reached', dailyStopReason: 'stop_after_1_success', logger, profilePseudo: context.profilePseudo })
+      continue
+    }
 
-      const row = buildSpontaneousLog({
-        now,
-        sentAt,
-        target,
-        status: 'sent_pending_delivery',
-        profilePseudo: context.profilePseudo,
-        messageId: result?.messageId || '',
-        attemptId,
-        sentTo,
-        subject: message.subject,
-        attemptOfDay,
-        dailyStopReason: 'stop_after_1_success',
-      })
-      saveApplicationEmailSend(db, row)
-      updateApplicationContactStatus(db, { offerKey: target.offerKey, email: target.email, profilePseudo: context.profilePseudo, status: 'sent_pending_delivery', lastAttemptAt: sentAt, incrementAttempts: true })
-      summary.sent += 1
-      summary.results.push({ ...row, cvFileName: context.cvFileName })
-      logger.log('[spontaneous_application] 1 envoye, arret journalier')
-      return summary
-    } catch (error) {
-      const status = isHardSmtpFailure(error) ? 'invalid' : 'failed'
-      const dailyStopReason = attemptOfDay >= 3 ? 'stop_after_3_failures' : ''
-      const row = buildSpontaneousLog({
-        now,
-        sentAt,
-        target,
-        status,
-        profilePseudo: context.profilePseudo,
-        error: error.message,
-        attemptId,
-        sentTo,
-        subject: message.subject,
-        attemptOfDay,
-        dailyStopReason,
-      })
-      saveApplicationEmailSend(db, row)
-      updateApplicationContactStatus(db, {
-        offerKey: target.offerKey,
-        email: target.email,
-        profilePseudo: context.profilePseudo,
-        status,
-        lastAttemptAt: sentAt,
-        bounceReason: error.message,
-        incrementAttempts: true,
-      })
-      summary.failed += 1
-      summary.results.push(row)
-      logger.error(`[spontaneous_application] echec ${target.email}: ${error.message}`)
-      if (attemptOfDay >= 3) return summary
+    if (failuresToday >= 3) {
+      stopWithSkip({ db, summary, now, reason: 'daily_failure_cap_reached', dailyStopReason: 'stop_after_3_failures', logger, profilePseudo: context.profilePseudo })
+      continue
+    }
+
+    const profileOffers = profile ? offersForProfile(source.offers, profile, profiles) : source.offers
+    const targets = await collectSpontaneousTargets({ db, offers: profileOffers, env, config, contactFetcher, now, profilePseudo: context.profilePseudo })
+    summary.candidates += targets.length
+    let attemptOfDay = failuresToday
+
+    while (attemptOfDay < 3) {
+      const target = chooseSpontaneousTarget({ targets, successfulEmails, spontaneousSends, now, env })
+      if (!target) {
+        summary.skipped += 1
+        summary.results.push(buildSpontaneousLog({
+          now,
+          target: null,
+          status: 'skipped',
+          reason: 'no_contact_available',
+          profilePseudo: context.profilePseudo,
+          attemptOfDay,
+        }))
+        break
+      }
+
+      attemptOfDay += 1
+      const sentAt = now.toISOString()
+      const attemptId = buildAttemptId({ offerKey: target.key, email: target.email, now })
+      const sentTo = applicationRecipient([target.email], env)
+      const bounceAddress = buildBounceAddress(attemptId, env)
+      const message = buildSpontaneousApplicationMessage({ context })
+      const sendEnv = buildApplicationSmtpEnv(context, env)
+
+      try {
+        const result = await mailer({
+          to: sentTo,
+          subject: message.subject,
+          text: message.text,
+          attachments: [
+            {
+              filename: context.cvFileName,
+              path: context.cvPath,
+            },
+          ],
+          ...(bounceAddress ? {
+            envelope: { from: bounceAddress, to: Array.isArray(sentTo) ? sentTo : [sentTo] },
+            dsn: { id: attemptId, return: 'headers', notify: ['failure', 'delay'], recipient: target.email },
+          } : {}),
+        }, sendEnv)
+
+        const row = buildSpontaneousLog({
+          now,
+          sentAt,
+          target,
+          status: 'sent_pending_delivery',
+          profilePseudo: context.profilePseudo,
+          messageId: result?.messageId || '',
+          attemptId,
+          sentTo,
+          subject: message.subject,
+          attemptOfDay,
+          dailyStopReason: 'stop_after_1_success',
+        })
+        saveApplicationEmailSend(db, row)
+        updateApplicationContactStatus(db, { offerKey: target.offerKey, email: target.email, profilePseudo: context.profilePseudo, status: 'sent_pending_delivery', lastAttemptAt: sentAt, incrementAttempts: true })
+        summary.sent += 1
+        summary.results.push({ ...row, cvFileName: context.cvFileName })
+        logger.log(`[spontaneous_application] 1 envoye pour ${context.profilePseudo || 'profil par defaut'}, arret journalier`)
+        break
+      } catch (error) {
+        const status = isHardSmtpFailure(error) ? 'invalid' : 'failed'
+        const dailyStopReason = attemptOfDay >= 3 ? 'stop_after_3_failures' : ''
+        const row = buildSpontaneousLog({
+          now,
+          sentAt,
+          target,
+          status,
+          profilePseudo: context.profilePseudo,
+          error: error.message,
+          attemptId,
+          sentTo,
+          subject: message.subject,
+          attemptOfDay,
+          dailyStopReason,
+        })
+        saveApplicationEmailSend(db, row)
+        updateApplicationContactStatus(db, {
+          offerKey: target.offerKey,
+          email: target.email,
+          profilePseudo: context.profilePseudo,
+          status,
+          lastAttemptAt: sentAt,
+          bounceReason: error.message,
+          incrementAttempts: true,
+        })
+        summary.failed += 1
+        summary.results.push(row)
+        logger.error(`[spontaneous_application] echec ${target.email}: ${error.message}`)
+        if (attemptOfDay >= 3) break
+      }
     }
   }
 
@@ -193,19 +209,55 @@ export async function sendDailySpontaneousApplications({
 export function buildSpontaneousApplicationMessage({ context }) {
   const mail = context.applicationMail || {}
   const signature = [mail.firstName, mail.lastName].filter(Boolean).join(' ').trim()
+  const targetRoles = formatTargetRoles(mail.targetRoleLabels || mail.targetRoles)
+  const template = mail.spontaneousTemplate || {}
+  const data = {
+    targetRoles,
+    firstName: mail.firstName || '',
+    lastName: mail.lastName || '',
+    signature,
+    phone: mail.phone || '',
+  }
+  if (template.subject || template.body) {
+    return {
+      subject: renderSpontaneousPlaceholders(template.subject || 'Candidature spontanée', data),
+      text: renderSpontaneousPlaceholders(template.body || defaultSpontaneousBodyTemplate(), data),
+    }
+  }
   return {
     subject: 'Candidature spontanée',
-    text: `Bonjour,
+    text: renderSpontaneousPlaceholders(defaultSpontaneousBodyTemplate(), data),
+  }
+}
 
-Je vous adresse ma candidature spontanée pour des postes de Product Owner, Business Analyst ou Chef de projet MOA / AMOA.
+function defaultSpontaneousBodyTemplate() {
+  return `Bonjour,
+
+Je vous adresse ma candidature spontanée pour des postes de [Postes cibles].
 
 Vous trouverez mon CV en pièce jointe. Je suis disponible pour échanger par téléphone afin de vous présenter mon profil.
 
-Vous pouvez me joindre au ${mail.phone}.
+Vous pouvez me joindre au [Téléphone].
 
 Bien cordialement,
-${signature}`,
-  }
+[Prénom Nom]`
+}
+
+function renderSpontaneousPlaceholders(template, data) {
+  return String(template || '')
+    .replaceAll('[Postes cibles]', data.targetRoles)
+    .replaceAll('[Métiers cibles]', data.targetRoles)
+    .replaceAll('[Prénom]', data.firstName)
+    .replaceAll('[Nom]', data.lastName)
+    .replaceAll('[Prénom Nom]', data.signature)
+    .replaceAll('[Téléphone]', data.phone)
+}
+
+function formatTargetRoles(values = []) {
+  const roles = Array.from(new Set((Array.isArray(values) ? values : []).map((value) => String(value || '').trim()).filter(Boolean)))
+  if (roles.length === 0) return 'Product Owner, Business Analyst ou Chef de projet MOA / AMOA'
+  if (roles.length === 1) return roles[0]
+  return `${roles.slice(0, -1).join(', ')} ou ${roles.at(-1)}`
 }
 
 export function spontaneousSendWindow(now, env = process.env) {
@@ -312,13 +364,24 @@ function buildSpontaneousLog({
   }
 }
 
-function stopWithSkip({ db, summary, now, reason, dailyStopReason, logger }) {
-  const row = buildSpontaneousLog({ now, status: 'skipped', reason, dailyStopReason })
+function stopWithSkip({ db, summary, now, reason, dailyStopReason, profilePseudo = '', logger }) {
+  const row = buildSpontaneousLog({ now, status: 'skipped', reason, dailyStopReason, profilePseudo })
   saveApplicationEmailSend(db, row)
   summary.skipped += 1
   summary.results.push(row)
   logger.warn(`[spontaneous_application] ignore: ${reason}`)
   return summary
+}
+
+function stopAllWithSkip({ db, summary, now, reason, dailyStopReason, logger, contexts }) {
+  for (const { context } of contexts) {
+    stopWithSkip({ db, summary, now, reason, dailyStopReason, logger, profilePseudo: context.profilePseudo })
+  }
+  return summary
+}
+
+function offersForProfile(offers, profile, profiles) {
+  return offers.filter((offer) => selectCandidateProfile(offer, profiles)?.pseudo === profile.pseudo)
 }
 
 function spontaneousTimezone(env) {

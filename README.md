@@ -131,8 +131,16 @@ est rattachée automatiquement au profil dont les mots-clés métier corresponde
 le mieux à l'intitulé et à la description.
 
 Chaque profil peut définir `pseudo`, `label`, `firstName`, `lastName`, `phone`,
-`emailFrom`, `smtpPrefix`, `cvPath`, `targetRoles`, `excludedRoles`, `dailyQuota` et
-`template.subject`/`template.body`.
+`emailFrom`, `smtpPrefix`, `cvPath`, `automaticOfferApplicationsEnabled`,
+`automaticSpontaneousApplicationsEnabled`, `targetRoles`, `excludedRoles`,
+`dailyQuota`, `template.subject`/`template.body` pour les offres et
+`spontaneousTemplate.subject`/`spontaneousTemplate.body` pour les candidatures
+spontanées.
+Les deux réglages d'envoi valent `false` par défaut et peuvent être activés
+séparément depuis les toggles du profil actif dans l'interface. Ils ne pilotent
+que les mails de candidature sur offre, les mails de candidature spontanée et le
+mail test; la collecte nocturne, les appels API emploi et la découverte de
+contacts restent actifs.
 
 Si `smtpPrefix` est renseigné, le profil utilise les variables SMTP préfixées
 correspondantes. Par exemple `"smtpPrefix": "SECOND"` active
@@ -207,15 +215,19 @@ projet MOA/AMOA, delivery, discovery, funéraire ou transverse. Le mail inclut
 l'intitulé, l'URL de l'offre quand elle existe, le CV du profil choisi et le
 template du profil si un template local est configuré.
 
-L'envoi spontané réutilise la découverte de contacts existante, mais le mail a
-toujours l'objet `Candidature spontanée` et ne contient aucune URL d'offre. Le
-corps reprend le téléphone, le prénom et le nom configurés par l'utilisateur,
-et joint le CV actif importé. Les règles spécifiques sont :
+L'envoi spontané réutilise la découverte de contacts existante, profil par
+profil. Les offres utilisées pour trouver les destinataires sont filtrées selon
+les postes cibles de chaque profil, le mail ne contient aucune URL d'offre, et
+le corps reprend le téléphone, le prénom, le nom et le CV actif du profil. Si
+`spontaneousTemplate` est absent, un mail par défaut utilise `[Postes cibles]`,
+`[Téléphone]` et `[Prénom Nom]`. Les règles spécifiques sont :
 
-- ne jamais renvoyer une candidature spontanée à un email déjà envoyé ;
-- maximum 1 candidature spontanée acceptée par SMTP par jour ;
+- ne jamais renvoyer une candidature spontanée à un email déjà envoyé pour le
+  même profil ;
+- maximum 1 candidature spontanée acceptée par SMTP par jour et par profil ;
 - retry immédiat en cas d'échec d'envoi ;
-- arrêt jusqu'au lendemain après 1 succès ou après 3 échecs d'envoi ;
+- arrêt jusqu'au lendemain pour le profil après 1 succès ou après 3 échecs
+  d'envoi ;
 - fenêtre dédiée 08:00-21:59 inclus.
 
 Chaque tentative est loggée avec la date/heure, le type d'action, l'entreprise,

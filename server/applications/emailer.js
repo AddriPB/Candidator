@@ -99,6 +99,12 @@ export async function sendDailyApplicationEmails({
       logger.warn(`[applications] envoi ignore ${offer.id}: no_matching_profile`)
       continue
     }
+    if (profile && profile.automaticOfferApplicationsEnabled !== true) {
+      summary.skipped += 1
+      summary.results.push({ status: 'skipped', reason: 'profile_automatic_offer_applications_disabled', offerId: offer.id, offerKey, offerTitle: offer.title, profilePseudo: profile.pseudo })
+      logger.warn(`[applications] envoi ignore ${offer.id}: profile_automatic_offer_applications_disabled:${profile.pseudo}`)
+      continue
+    }
     const context = profile ? buildApplicationContextFromProfile(profile) : legacyContext
     if (!context.ready) {
       summary.skipped += 1
@@ -253,6 +259,11 @@ export async function sendApplicationTestEmail({ to, profilePseudo = '', env = p
 
   const profiles = loadCandidateProfiles({ env })
   const profile = profiles.find((item) => item.pseudo === String(profilePseudo || '').trim())
+  if (profile && profile.automaticOfferApplicationsEnabled !== true) {
+    const error = new Error('profile_automatic_offer_applications_disabled')
+    error.status = 403
+    throw error
+  }
   const context = profile
     ? buildApplicationContextFromProfile(profile)
     : buildApplicationContext(getCvState({ pseudo: profilePseudo }))
@@ -329,6 +340,9 @@ export function buildApplicationContextFromProfile(profile) {
     lastName: profileMail.lastName || runtime.lastName,
     phone: profileMail.phone || runtime.phone || '',
     dynamicTemplate: runtime.template,
+    spontaneousTemplate: runtime.spontaneousTemplate,
+    targetRoles: runtime.targetRoles || [],
+    targetRoleLabels: runtime.targetRoleLabels || [],
   }
   const missing = []
   if (!applicationMail.firstName) missing.push('prenom manquant')
