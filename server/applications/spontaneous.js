@@ -92,7 +92,7 @@ export async function sendDailySpontaneousApplications({
     return stopWithSkip({ db, summary, now, reason: 'daily_failure_cap_reached', dailyStopReason: 'stop_after_3_failures', logger })
   }
 
-  const targets = await collectSpontaneousTargets({ db, offers: source.offers, env, config, contactFetcher, now })
+  const targets = await collectSpontaneousTargets({ db, offers: source.offers, env, config, contactFetcher, now, profilePseudo: context.profilePseudo })
   summary.candidates = targets.length
   let attemptOfDay = failuresToday
 
@@ -149,7 +149,7 @@ export async function sendDailySpontaneousApplications({
         dailyStopReason: 'stop_after_1_success',
       })
       saveApplicationEmailSend(db, row)
-      updateApplicationContactStatus(db, { offerKey: target.offerKey, email: target.email, status: 'sent_pending_delivery', lastAttemptAt: sentAt, incrementAttempts: true })
+      updateApplicationContactStatus(db, { offerKey: target.offerKey, email: target.email, profilePseudo: context.profilePseudo, status: 'sent_pending_delivery', lastAttemptAt: sentAt, incrementAttempts: true })
       summary.sent += 1
       summary.results.push({ ...row, cvFileName: context.cvFileName })
       logger.log('[spontaneous_application] 1 envoye, arret journalier')
@@ -174,6 +174,7 @@ export async function sendDailySpontaneousApplications({
       updateApplicationContactStatus(db, {
         offerKey: target.offerKey,
         email: target.email,
+        profilePseudo: context.profilePseudo,
         status,
         lastAttemptAt: sentAt,
         bounceReason: error.message,
@@ -216,23 +217,23 @@ export function spontaneousSendWindow(now, env = process.env) {
   })
 }
 
-async function collectSpontaneousTargets({ db, offers, env, config, contactFetcher, now }) {
+async function collectSpontaneousTargets({ db, offers, env, config, contactFetcher, now, profilePseudo = '' }) {
   for (const offer of offers) {
     const offerKey = applicationOfferKey(offer)
     const contacts = await discoverContactsForOffer(offer, { offerKey, env, fetcher: contactFetcher, now })
-    upsertApplicationContacts(db, contacts, { now })
+    upsertApplicationContacts(db, contacts, { now, profilePseudo })
   }
 
   const esnOffers = buildEsnDiscoveryOffers(config.esn_contact_discovery)
   const esnContacts = await discoverEsnRecruiterContacts(config, { env, fetcher: contactFetcher, now })
-  upsertApplicationContacts(db, esnContacts, { now })
+  upsertApplicationContacts(db, esnContacts, { now, profilePseudo })
 
   const webOffers = buildWebDiscoveryOffers(config.web_contact_discovery)
   const webContacts = await discoverWebRecruiterContacts(config, { fetcher: contactFetcher, now })
-  upsertApplicationContacts(db, webContacts, { now })
+  upsertApplicationContacts(db, webContacts, { now, profilePseudo })
 
   const offersByKey = new Map([...offers, ...esnOffers, ...webOffers].map((offer) => [applicationOfferKey(offer), offer]))
-  const contacts = getAllApplicationContacts(db)
+  const contacts = getAllApplicationContacts(db, { profilePseudo })
   const targets = []
   const seen = new Set()
   for (const contact of contacts) {

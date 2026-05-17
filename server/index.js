@@ -291,7 +291,11 @@ function getOffersScreenState(db, { profilePseudo = '' } = {}) {
     : null
   const sendsByOfferKey = applicationSendsByOfferKey(getApplicationEmailSends(db), { profilePseudo: selectedProfile?.pseudo || '' })
   const screenOffers = selectedProfile
-    ? source.offers.filter((offer) => selectCandidateProfile(offer, profiles)?.pseudo === selectedProfile.pseudo)
+    ? source.offers.filter((offer) => {
+      const storedProfilePseudo = String(offer.profilePseudo || offer.profile_pseudo || '').trim()
+      if (storedProfilePseudo) return storedProfilePseudo === selectedProfile.pseudo
+      return selectCandidateProfile(offer, profiles)?.pseudo === selectedProfile.pseudo
+    })
     : source.offers
   const offers = screenOffers.map((offer) => {
     const offerKey = applicationOfferKey(offer)

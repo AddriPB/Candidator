@@ -54,7 +54,10 @@ Copier `.env.example` vers `.env` sur le Pi et renseigner les valeurs privées :
 - `RAPIDAPI_KEY`
 - `CAREERJET_API_KEY`
 - `CAREERJET_REFERER`
-- `DATABASE_PATH`
+- `DATABASE_PATH` : chemin du store local. Utiliser
+  `./data/opportunity-radar.sqlite` sur le Pi et sur le Mac pour travailler sur
+  le même moteur que la prod. Le store JSON reste un fallback/matériau de
+  migration si `better-sqlite3` n'est pas disponible.
 - `RADAR_OUTPUT_DIR`
 - `OPPORTUNITY_RADAR_CONFIG`
 - `CANDIDATE_PROFILES_CONFIG` : chemin optionnel vers la configuration locale

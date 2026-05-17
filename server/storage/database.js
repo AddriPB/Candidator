@@ -318,18 +318,20 @@ export function saveApplicationEmailSend(db, row) {
   )
 }
 
-export function upsertApplicationOpportunity(db, opportunity) {
-  upsertApplicationOpportunities(db, [opportunity])
+export function upsertApplicationOpportunity(db, opportunity, options = {}) {
+  upsertApplicationOpportunities(db, [opportunity], options)
 }
 
-export function upsertApplicationOpportunities(db, opportunities, { now = new Date() } = {}) {
-  const rows = opportunities.map((item) => normalizeApplicationOpportunity(item, now)).filter((item) => item.opportunityKey)
+export function upsertApplicationOpportunities(db, opportunities, { now = new Date(), profilePseudo = '' } = {}) {
+  const rows = opportunities
+    .map((item) => normalizeApplicationOpportunity({ ...item, profilePseudo: item?.profilePseudo || item?.profile_pseudo || profilePseudo }, now))
+    .filter((item) => item.opportunityKey)
   if (!rows.length) return
 
   if (db.kind === 'json') {
     refreshJsonStore(db)
     for (const row of rows) {
-      const index = db.data.applicationOpportunities.findIndex((item) => item.opportunityKey === row.opportunityKey)
+      const index = db.data.applicationOpportunities.findIndex((item) => String(item.profilePseudo || item.profile_pseudo || '') === row.profilePseudo && item.opportunityKey === row.opportunityKey)
       const existing = index >= 0 ? normalizeApplicationOpportunity(db.data.applicationOpportunities[index], now) : null
       const next = mergeOpportunity(existing, row)
       if (index >= 0) db.data.applicationOpportunities[index] = next
@@ -339,11 +341,11 @@ export function upsertApplicationOpportunities(db, opportunities, { now = new Da
     return
   }
 
-  const select = db.db.prepare('SELECT opportunity_key AS opportunityKey, detected_at AS detectedAt, updated_at AS updatedAt, source, company, title, url, recruiter_email AS recruiterEmail, application_type AS applicationType, status, reason, sent_at AS sentAt, offer_id AS offerId FROM application_opportunities WHERE opportunity_key = ?')
+  const select = db.db.prepare('SELECT profile_pseudo AS profilePseudo, opportunity_key AS opportunityKey, detected_at AS detectedAt, updated_at AS updatedAt, source, company, title, url, recruiter_email AS recruiterEmail, application_type AS applicationType, status, reason, sent_at AS sentAt, offer_id AS offerId FROM application_opportunities WHERE profile_pseudo = ? AND opportunity_key = ?')
   const insert = db.db.prepare(`
     INSERT INTO application_opportunities (
-      opportunity_key, detected_at, updated_at, source, company, title, url, recruiter_email, application_type, status, reason, sent_at, offer_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      profile_pseudo, opportunity_key, detected_at, updated_at, source, company, title, url, recruiter_email, application_type, status, reason, sent_at, offer_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   const update = db.db.prepare(`
     UPDATE application_opportunities
@@ -358,14 +360,15 @@ export function upsertApplicationOpportunities(db, opportunities, { now = new Da
         reason = ?,
         sent_at = ?,
         offer_id = ?
-    WHERE opportunity_key = ?
+    WHERE profile_pseudo = ? AND opportunity_key = ?
   `)
   const trx = db.db.transaction(() => {
     for (const row of rows) {
-      const existing = select.get(row.opportunityKey)
+      const existing = select.get(row.profilePseudo, row.opportunityKey)
       const next = mergeOpportunity(existing ? normalizeApplicationOpportunity(existing, now) : null, row)
       if (!existing) {
         insert.run(
+          next.profilePseudo,
           next.opportunityKey,
           next.detectedAt,
           next.updatedAt,
@@ -393,6 +396,7 @@ export function upsertApplicationOpportunities(db, opportunities, { now = new Da
           next.reason,
           next.sentAt,
           next.offerId,
+          next.profilePseudo,
           next.opportunityKey,
         )
       }
@@ -401,28 +405,32 @@ export function upsertApplicationOpportunities(db, opportunities, { now = new Da
   trx()
 }
 
-export function updateApplicationOpportunityStatus(db, { opportunityKey, status, reason = '', sentAt = '', recruiterEmail = '' }) {
+export function updateApplicationOpportunityStatus(db, { opportunityKey, profilePseudo = '', status, reason = '', sentAt = '', recruiterEmail = '' }) {
   if (!opportunityKey) return
   upsertApplicationOpportunity(db, {
+    profilePseudo,
     opportunityKey,
     status,
     reason,
     sentAt,
     recruiterEmail,
-  })
+  }, { profilePseudo })
 }
 
-export function getApplicationOpportunities(db, { since = new Date(0).toISOString(), statuses = [] } = {}) {
+export function getApplicationOpportunities(db, { since = new Date(0).toISOString(), statuses = [], profilePseudo = '' } = {}) {
   if (db.kind === 'json') {
     refreshJsonStore(db)
     return db.data.applicationOpportunities
       .map((row) => normalizeApplicationOpportunity(row))
+      .filter((row) => !profilePseudo || row.profilePseudo === profilePseudo)
       .filter((row) => row.detectedAt >= since || row.updatedAt >= since || row.sentAt >= since)
       .filter((row) => statuses.length === 0 || statuses.includes(row.status))
       .sort((a, b) => String(b.updatedAt || b.detectedAt).localeCompare(String(a.updatedAt || a.detectedAt)))
   }
+  const whereProfile = profilePseudo ? 'AND profile_pseudo = ?' : ''
   const rows = db.db.prepare(`
-    SELECT opportunity_key AS opportunityKey,
+    SELECT profile_pseudo AS profilePseudo,
+           opportunity_key AS opportunityKey,
            detected_at AS detectedAt,
            updated_at AS updatedAt,
            source,
@@ -436,9 +444,9 @@ export function getApplicationOpportunities(db, { since = new Date(0).toISOStrin
            sent_at AS sentAt,
            offer_id AS offerId
     FROM application_opportunities
-    WHERE detected_at >= ? OR updated_at >= ? OR sent_at >= ?
+    WHERE (detected_at >= ? OR updated_at >= ? OR sent_at >= ?) ${whereProfile}
     ORDER BY updated_at DESC, detected_at DESC
-  `).all(since, since, since).map((row) => normalizeApplicationOpportunity(row))
+  `).all(...(profilePseudo ? [since, since, since, profilePseudo] : [since, since, since])).map((row) => normalizeApplicationOpportunity(row))
   return statuses.length ? rows.filter((row) => statuses.includes(row.status)) : rows
 }
 
@@ -454,16 +462,19 @@ export function applicationOpportunityKeyFromOffer(offer, { email = '', applicat
   return ''
 }
 
-export function getAllApplicationContacts(db) {
+export function getAllApplicationContacts(db, { profilePseudo = '' } = {}) {
   if (db.kind === 'json') {
     refreshJsonStore(db)
     return db.data.applicationContacts
       .map((row) => ({ ...row, email: normalizeEmail(row.email) }))
+      .filter((row) => !profilePseudo || String(row.profilePseudo || row.profile_pseudo || '') === profilePseudo)
       .filter((row) => row.email)
       .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0) || String(a.email).localeCompare(String(b.email)))
   }
+  const whereProfile = profilePseudo ? 'WHERE profile_pseudo = ?' : ''
   return db.db.prepare(`
-    SELECT offer_key AS offerKey,
+    SELECT profile_pseudo AS profilePseudo,
+           offer_key AS offerKey,
            email,
            method,
            source_url AS sourceUrl,
@@ -474,19 +485,23 @@ export function getAllApplicationContacts(db) {
            attempts,
            updated_at AS updatedAt
     FROM application_contacts
+    ${whereProfile}
     ORDER BY confidence DESC, email ASC
-  `).all()
+  `).all(...(profilePseudo ? [profilePseudo] : []))
 }
 
-export function getApplicationContacts(db, offerKey) {
+export function getApplicationContacts(db, offerKey, { profilePseudo = '' } = {}) {
   if (db.kind === 'json') {
     refreshJsonStore(db)
     return db.data.applicationContacts
       .filter((row) => row.offerKey === offerKey)
+      .filter((row) => !profilePseudo || String(row.profilePseudo || row.profile_pseudo || '') === profilePseudo)
       .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0) || String(a.email).localeCompare(String(b.email)))
   }
+  const whereProfile = profilePseudo ? 'AND profile_pseudo = ?' : ''
   return db.db.prepare(`
-    SELECT offer_key AS offerKey,
+    SELECT profile_pseudo AS profilePseudo,
+           offer_key AS offerKey,
            email,
            method,
            source_url AS sourceUrl,
@@ -497,21 +512,23 @@ export function getApplicationContacts(db, offerKey) {
            attempts,
            updated_at AS updatedAt
     FROM application_contacts
-    WHERE offer_key = ?
+    WHERE offer_key = ? ${whereProfile}
     ORDER BY confidence DESC, email ASC
-  `).all(offerKey)
+  `).all(...(profilePseudo ? [offerKey, profilePseudo] : [offerKey]))
 }
 
-export function upsertApplicationContacts(db, contacts, { now = new Date() } = {}) {
+export function upsertApplicationContacts(db, contacts, { now = new Date(), profilePseudo = '' } = {}) {
   if (!contacts.length) return
   const updatedAt = now.toISOString()
   if (db.kind === 'json') {
     refreshJsonStore(db)
     for (const contact of contacts) {
-      const index = db.data.applicationContacts.findIndex((row) => row.offerKey === contact.offerKey && row.email === contact.email)
+      const contactProfilePseudo = String(contact.profilePseudo || contact.profile_pseudo || profilePseudo || '')
+      const index = db.data.applicationContacts.findIndex((row) => String(row.profilePseudo || row.profile_pseudo || '') === contactProfilePseudo && row.offerKey === contact.offerKey && row.email === contact.email)
       const existing = index >= 0 ? db.data.applicationContacts[index] : {}
       const next = {
         ...existing,
+        profilePseudo: contactProfilePseudo,
         offerKey: contact.offerKey,
         email: contact.email,
         method: contact.method || existing.method || 'unknown',
@@ -531,9 +548,9 @@ export function upsertApplicationContacts(db, contacts, { now = new Date() } = {
   }
   const statement = db.db.prepare(`
     INSERT INTO application_contacts (
-      offer_key, email, method, source_url, confidence, status, last_attempt_at, bounce_reason, attempts, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, '', '', 0, ?)
-    ON CONFLICT(offer_key, email) DO UPDATE SET
+      profile_pseudo, offer_key, email, method, source_url, confidence, status, last_attempt_at, bounce_reason, attempts, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, '', '', 0, ?)
+    ON CONFLICT(profile_pseudo, offer_key, email) DO UPDATE SET
       method = excluded.method,
       source_url = CASE WHEN excluded.source_url != '' THEN excluded.source_url ELSE application_contacts.source_url END,
       confidence = MAX(application_contacts.confidence, excluded.confidence),
@@ -543,6 +560,7 @@ export function upsertApplicationContacts(db, contacts, { now = new Date() } = {
   const trx = db.db.transaction(() => {
     for (const contact of contacts) {
       statement.run(
+        contact.profilePseudo || contact.profile_pseudo || profilePseudo || '',
         contact.offerKey,
         contact.email,
         contact.method || 'unknown',
@@ -556,10 +574,10 @@ export function upsertApplicationContacts(db, contacts, { now = new Date() } = {
   trx()
 }
 
-export function updateApplicationContactStatus(db, { offerKey, email, status, lastAttemptAt = '', bounceReason = '', incrementAttempts = false }) {
+export function updateApplicationContactStatus(db, { offerKey, email, profilePseudo = '', status, lastAttemptAt = '', bounceReason = '', incrementAttempts = false }) {
   if (db.kind === 'json') {
     refreshJsonStore(db)
-    const row = db.data.applicationContacts.find((item) => item.offerKey === offerKey && item.email === email)
+    const row = db.data.applicationContacts.find((item) => (!profilePseudo || String(item.profilePseudo || item.profile_pseudo || '') === profilePseudo) && item.offerKey === offerKey && item.email === email)
     if (row) {
       row.status = status || row.status
       if (lastAttemptAt) row.lastAttemptAt = lastAttemptAt
@@ -570,6 +588,7 @@ export function updateApplicationContactStatus(db, { offerKey, email, status, la
     }
     return
   }
+  const whereProfile = profilePseudo ? 'AND profile_pseudo = ?' : ''
   db.db.prepare(`
     UPDATE application_contacts
     SET status = COALESCE(NULLIF(?, ''), status),
@@ -577,7 +596,7 @@ export function updateApplicationContactStatus(db, { offerKey, email, status, la
         bounce_reason = CASE WHEN ? != '' THEN ? ELSE bounce_reason END,
         attempts = attempts + ?,
         updated_at = ?
-    WHERE offer_key = ? AND email = ?
+    WHERE offer_key = ? AND email = ? ${whereProfile}
   `).run(
     status || '',
     lastAttemptAt || '',
@@ -588,6 +607,7 @@ export function updateApplicationContactStatus(db, { offerKey, email, status, la
     new Date().toISOString(),
     offerKey,
     email,
+    ...(profilePseudo ? [profilePseudo] : []),
   )
 }
 
@@ -636,6 +656,7 @@ export function getLatestSourceChecks(db) {
 function toPublicOffer(offer) {
   return {
     id: offer.id,
+    profilePseudo: offer.profilePseudo || offer.profile_pseudo || '',
     source: offer.source,
     sources: Array.isArray(offer.sources) ? offer.sources : [offer.source].filter(Boolean),
     title: offer.title,
@@ -670,6 +691,7 @@ function toPublicOffer(offer) {
 }
 
 function isVisibleOffer(offer) {
+  if ((isLenaOffer(offer) || isFuneralTargetOffer(offer)) && !isJuniorOrUnspecified(offer)) return false
   return offer.verdict !== 'à rejeter' && offer.evaluation?.status !== 'à rejeter' && hasStrictTargetRole(offer)
 }
 
@@ -681,6 +703,37 @@ function isApplicationCandidateOffer(offer, { since, now, requireEmail = false }
 function hasStrictTargetRole(offer) {
   const role = detectRole(String(offer.title || ''), String(offer.title || ''))
   return role.status === 'clear' || role.status === 'compatible'
+}
+
+function isLenaOffer(offer) {
+  return String(offer.profilePseudo || offer.profile_pseudo || '') === 'léna'
+}
+
+function isFuneralTargetOffer(offer) {
+  const title = normalizeLevelText(offer.title)
+  return /\bconseiller(?:\s+(?:conseillere|e))?(?:\s+\w+){0,2}\s+funeraire\b/.test(title) ||
+    /\bassistant(?:e)?(?:\s+\w+){0,2}\s+funeraire\b/.test(title)
+}
+
+function isJuniorOrUnspecified(offer) {
+  const title = normalizeLevelText(offer.title)
+  const level = normalizeLevelText(offer.level)
+  if (/(senior|confirme|experimente|responsable|manager|directeur)/.test(title)) return false
+  if (!level) return true
+  if (/(senior|confirme|experimente|experience exigee|responsable|manager|directeur)/.test(level)) return false
+  if (/(debutant accepte|debutant|junior|sans experience)/.test(level)) return true
+  const years = level.match(/\b(\d+)\s*an/)
+  if (years) return Number(years[1]) <= 1
+  const months = level.match(/\b(\d+)\s*mois/)
+  if (months) return Number(months[1]) <= 12
+  return true
+}
+
+function normalizeLevelText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
 }
 
 function isRecentOffer(offer, { since, now }) {
@@ -786,6 +839,7 @@ function migrate(db) {
 
     CREATE TABLE IF NOT EXISTS application_contacts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      profile_pseudo TEXT NOT NULL DEFAULT '',
       offer_key TEXT NOT NULL,
       email TEXT NOT NULL,
       method TEXT NOT NULL,
@@ -798,11 +852,9 @@ function migrate(db) {
       updated_at TEXT NOT NULL DEFAULT ''
     );
 
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_application_contacts_offer_email
-      ON application_contacts(offer_key, email);
-
     CREATE TABLE IF NOT EXISTS application_opportunities (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      profile_pseudo TEXT NOT NULL DEFAULT '',
       opportunity_key TEXT NOT NULL,
       detected_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -818,9 +870,6 @@ function migrate(db) {
       offer_id TEXT NOT NULL DEFAULT ''
     );
 
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_application_opportunities_key
-      ON application_opportunities(opportunity_key);
-
     CREATE INDEX IF NOT EXISTS idx_application_opportunities_status_updated
       ON application_opportunities(status, updated_at);
   `)
@@ -835,12 +884,30 @@ function migrate(db) {
   ensureColumn(db, 'application_email_sends', 'attempt_of_day', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(db, 'application_email_sends', 'skip_reason', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(db, 'application_email_sends', 'daily_stop_reason', "TEXT NOT NULL DEFAULT ''")
+  const addedApplicationContactsProfile = ensureColumn(db, 'application_contacts', 'profile_pseudo', "TEXT NOT NULL DEFAULT ''")
+  const addedApplicationOpportunitiesProfile = ensureColumn(db, 'application_opportunities', 'profile_pseudo', "TEXT NOT NULL DEFAULT ''")
   ensureColumn(db, 'application_opportunities', 'offer_id', "TEXT NOT NULL DEFAULT ''")
+  if (addedApplicationContactsProfile) {
+    db.exec("UPDATE application_contacts SET profile_pseudo = 'adri' WHERE profile_pseudo = ''")
+  }
+  if (addedApplicationOpportunitiesProfile) {
+    db.exec("UPDATE application_opportunities SET profile_pseudo = 'adri' WHERE profile_pseudo = ''")
+  }
+  db.exec(`
+    DROP INDEX IF EXISTS idx_application_contacts_offer_email;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_application_contacts_profile_offer_email
+      ON application_contacts(profile_pseudo, offer_key, email);
+    DROP INDEX IF EXISTS idx_application_opportunities_key;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_application_opportunities_profile_key
+      ON application_opportunities(profile_pseudo, opportunity_key);
+  `)
 }
 
 function ensureColumn(db, table, column, definition) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((item) => item.name)
-  if (!columns.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+  if (columns.includes(column)) return false
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+  return true
 }
 
 function importJsonStoreIfSqliteEmpty(db, dbPath) {
@@ -868,13 +935,13 @@ function importJsonStoreIfSqliteEmpty(db, dbPath) {
   `)
   const insertContact = db.prepare(`
     INSERT OR IGNORE INTO application_contacts (
-      offer_key, email, method, source_url, confidence, status, last_attempt_at, bounce_reason, attempts, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      profile_pseudo, offer_key, email, method, source_url, confidence, status, last_attempt_at, bounce_reason, attempts, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   const insertOpportunity = db.prepare(`
     INSERT OR IGNORE INTO application_opportunities (
-      opportunity_key, detected_at, updated_at, source, company, title, url, recruiter_email, application_type, status, reason, sent_at, offer_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      profile_pseudo, opportunity_key, detected_at, updated_at, source, company, title, url, recruiter_email, application_type, status, reason, sent_at, offer_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const trx = db.transaction(() => {
@@ -929,6 +996,7 @@ function importJsonStoreIfSqliteEmpty(db, dbPath) {
       const email = normalizeEmail(row.email)
       if (!email || !row.offerKey) continue
       insertContact.run(
+        row.profilePseudo || row.profile_pseudo || '',
         row.offerKey,
         email,
         row.method || 'unknown',
@@ -945,6 +1013,7 @@ function importJsonStoreIfSqliteEmpty(db, dbPath) {
       const normalized = normalizeApplicationOpportunity(row)
       if (!normalized.opportunityKey) continue
       insertOpportunity.run(
+        normalized.profilePseudo,
         normalized.opportunityKey,
         normalized.detectedAt,
         normalized.updatedAt,
@@ -1056,6 +1125,7 @@ function normalizeApplicationEmailSend(row) {
 function opportunityFromOffer(offer, { now = new Date() } = {}) {
   const rejected = offer.verdict === 'à rejeter' || offer.evaluation?.status === 'à rejeter'
   return {
+    profilePseudo: offer.profilePseudo || offer.profile_pseudo || '',
     opportunityKey: applicationOpportunityKeyFromOffer(offer),
     detectedAt: offer.collectedAt || offer.publishedAt || String(now),
     updatedAt: String(now),
@@ -1076,6 +1146,7 @@ function normalizeApplicationOpportunity(row, now = new Date()) {
   const date = typeof now === 'string' ? now : now.toISOString()
   const key = row?.opportunityKey || row?.opportunity_key || ''
   return {
+    profilePseudo: row?.profilePseudo || row?.profile_pseudo || '',
     opportunityKey: key,
     detectedAt: row?.detectedAt || row?.detected_at || date,
     updatedAt: row?.updatedAt || row?.updated_at || date,
@@ -1096,6 +1167,7 @@ function mergeOpportunity(existing, incoming) {
   if (!existing) return incoming
   const status = chooseOpportunityStatus(existing.status, incoming.status)
   return {
+    profilePseudo: existing.profilePseudo || incoming.profilePseudo,
     opportunityKey: existing.opportunityKey || incoming.opportunityKey,
     detectedAt: existing.detectedAt && existing.detectedAt < incoming.detectedAt ? existing.detectedAt : incoming.detectedAt || existing.detectedAt,
     updatedAt: incoming.updatedAt || existing.updatedAt,

@@ -115,8 +115,8 @@ export async function sendDailyApplicationEmails({
     const message = buildApplicationMessage({ offer, context })
 
     const discovered = await discoverContactsForOffer(offer, { offerKey, env, now })
-    upsertApplicationContacts(db, discovered, { now })
-    let contacts = getApplicationContacts(db, offerKey)
+    upsertApplicationContacts(db, discovered, { now, profilePseudo: context.profilePseudo })
+    let contacts = getApplicationContacts(db, offerKey, { profilePseudo: context.profilePseudo })
     if (contacts.length === 0) {
       summary.skipped += 1
       summary.results.push({ status: 'skipped', reason: 'no_contact_found', offerId: offer.id, offerKey, offerTitle: offer.title })
@@ -169,7 +169,7 @@ export async function sendDailyApplicationEmails({
           error: '',
         }
         saveApplicationEmailSend(db, row)
-        updateApplicationContactStatus(db, { offerKey, email: contact.email, status: 'sent_pending_delivery', lastAttemptAt: sentAt, incrementAttempts: true })
+        updateApplicationContactStatus(db, { offerKey, email: contact.email, profilePseudo: context.profilePseudo, status: 'sent_pending_delivery', lastAttemptAt: sentAt, incrementAttempts: true })
         sentOfferKeys.add(offerKey)
         liveSendsToday += 1
         if (context.profilePseudo) sendsTodayByProfile.set(context.profilePseudo, Number(sendsTodayByProfile.get(context.profilePseudo) || 0) + 1)
@@ -199,13 +199,14 @@ export async function sendDailyApplicationEmails({
         updateApplicationContactStatus(db, {
           offerKey,
           email: contact.email,
+          profilePseudo: context.profilePseudo,
           status,
           lastAttemptAt: sentAt,
           bounceReason: error.message,
           incrementAttempts: true,
         })
         immediateFailures += 1
-        contacts = getApplicationContacts(db, offerKey)
+        contacts = getApplicationContacts(db, offerKey, { profilePseudo: context.profilePseudo })
         if (!hardFailure) {
           summary.failed += 1
           summary.results.push(row)

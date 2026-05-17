@@ -21,10 +21,16 @@ const CLEAR_TARGET_ROLE_PATTERNS = [
   /\bpo\b/,
   /\bba\b/,
   /\bproxy\s+po\b/,
+  /\bconseiller\b(?:\W+\b(?:conseillere|e)\b)?(?:\W+\w+){0,2}\W+funeraire\b/,
+  /\bassistant(?:e)?\b(?:\W+\w+){0,2}\W+funeraire\b/,
   /\bchef(?:fe)?s?\s+de\s+projets?\b.*\b(?:moa|amoa)\b/,
   /\b(?:moa|amoa)\b.*\bchef(?:fe)?s?\s+de\s+projets?\b/,
   /\bconsultant(?:e)?s?\b.*\b(?:moa|amoa)\b/,
   /\b(?:moa|amoa)\b.*\bconsultant(?:e)?s?\b/,
+]
+
+const EXCLUDED_ROLE_PATTERNS = [
+  /\bmaitre\W+sse\W+de\W+ceremonie\b/,
 ]
 
 const COMPATIBLE_ROLES = ['chef de projet web', 'project manager digital']
@@ -110,7 +116,7 @@ export function detectRole(title, text = title) {
   const targetInTitle = hasClearTargetRole(title)
   const targetInText = hasClearTargetRole(text)
 
-  if (includesAny(title, EXCLUDED_ROLES)) return { status: 'reject', label: 'rôle exclu' }
+  if (includesAny(title, EXCLUDED_ROLES) || matchesAnyPattern(title, EXCLUDED_ROLE_PATTERNS)) return { status: 'reject', label: 'rôle exclu' }
   if (targetInTitle) return { status: 'clear', label: 'rôle cible clair' }
   if (includesAny(title, COMPATIBLE_ROLES)) return { status: 'compatible', label: 'chef de projet digital compatible' }
   if (targetInText) return { status: 'reject', label: 'rôle cible absent de l’intitulé' }
@@ -174,5 +180,10 @@ function hasAiDifferentiator(text) {
 
 function hasClearTargetRole(value) {
   const text = normalizeText(value)
-  return includesAny(text, CLEAR_TARGET_ROLES) || CLEAR_TARGET_ROLE_PATTERNS.some((pattern) => pattern.test(text))
+  return includesAny(text, CLEAR_TARGET_ROLES) || matchesAnyPattern(text, CLEAR_TARGET_ROLE_PATTERNS)
+}
+
+function matchesAnyPattern(value, patterns) {
+  const text = normalizeText(value)
+  return patterns.some((pattern) => pattern.test(text))
 }

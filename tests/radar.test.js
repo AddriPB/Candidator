@@ -15,10 +15,11 @@ import { buildSpontaneousApplicationMessage, sendDailySpontaneousApplications } 
 import { buildEsnDiscoveryOffers, buildWebDiscoveryOffers, discoverContactsForOffer, discoverEsnRecruiterContacts, discoverWebRecruiterContacts, extractMailtoEmails, inferRecruiterLocals } from '../server/applications/contactDiscovery.js'
 import { processApplicationBounces } from '../server/applications/bounces.js'
 import { cvPseudo, getCvState, saveApplicationMailTemplate, saveCvUpload, setActiveCv } from '../server/cv/storage.js'
-import { getAllApplicationContacts, getApplicationContacts, getApplicationEmailEligibleOffers, getLatestRadarOffers, openDatabase, saveRadarRun, saveSourceCheckLogs } from '../server/storage/database.js'
+import { getAllApplicationContacts, getApplicationContacts, getApplicationEmailEligibleOffers, getApplicationOpportunities, getLatestRadarOffers, openDatabase, saveRadarRun, saveSourceCheckLogs } from '../server/storage/database.js'
 import { nightlyRunSucceeded, recordNightlyAttempt, shouldRunNightlyRadar } from '../server/radar/nightlySchedule.js'
 import { isQuotaReachedError, QUOTA_REACHED_CODE } from '../server/radar/adapters/jsearch.js'
 import { loadCandidateProfiles, selectCandidateProfile } from '../server/profiles/config.js'
+import { applyProfileRules } from '../server/radar/pipeline.js'
 
 process.env.CANDIDATE_PROFILES_CONFIG = path.join(os.tmpdir(), 'opportunity-radar-test-missing-profiles.json')
 
@@ -64,6 +65,24 @@ test('filtrage rôle: accepte les sigles et intitulés cibles sans abréviation 
     const evaluation = evaluateOffer(offer({ title }), baseConfig)
     assert.equal(evaluation.role.status, 'clear', title)
   }
+})
+
+test('filtrage rôle: accepte les variantes conseiller funéraire', () => {
+  for (const title of [
+    'Conseiller / Conseillère funéraire (H/F)',
+    'Conseiller(e) funéraire polyvalent (H/F)',
+    'Conseiller clientèle funéraire (H/F)',
+    'Assistant funéraire H/F',
+    'Assistante funéraire H/F',
+  ]) {
+    const evaluation = evaluateOffer(offer({ title }), baseConfig)
+    assert.equal(evaluation.role.status, 'clear', title)
+  }
+})
+
+test('filtrage rôle: rejette maitre/sse de cérémonie même avec assistant funéraire', () => {
+  const evaluation = evaluateOffer(offer({ title: 'Maitre/sse de cérémonie-assistant/e funéraire (H/F)' }), baseConfig)
+  assert.equal(evaluation.role.status, 'reject')
 })
 
 test('filtrage rôle: rejette un poste sans rôle cible', () => {
@@ -280,6 +299,34 @@ test('stockage JSON: ne persiste pas les offres rejetées', () => {
   assert.equal(stored.radarRuns[0].offers[0].id, 'json:1')
 })
 
+test('stockage JSON: persiste le profil candidat des offres et opportunites', () => {
+  const jsonPath = makeJsonStore({ sourceChecks: [], radarRuns: [], applicationOpportunities: [] })
+  const db = { kind: 'json', path: jsonPath, data: { sourceChecks: [], radarRuns: [], applicationOpportunities: [] } }
+
+  saveRadarRun(db, {
+    startedAt: '2026-05-14T05:15:06.048Z',
+    summary: {},
+    logs: [],
+    offers: [
+      offer({
+        id: 'funeral:1',
+        title: 'Conseiller funéraire H/F',
+        profilePseudo: 'léna',
+        verdict: 'à candidater',
+      }),
+    ],
+    reports: { markdownPath: '', jsonPath: '' },
+  })
+
+  const latest = getLatestRadarOffers(db)
+  const opportunities = getApplicationOpportunities(db, { profilePseudo: 'léna' })
+
+  assert.equal(latest.offers[0].profilePseudo, 'léna')
+  assert.equal(opportunities.length, 1)
+  assert.equal(opportunities[0].profilePseudo, 'léna')
+  assert.equal(getApplicationOpportunities(db, { profilePseudo: 'adri' }).length, 0)
+})
+
 test('stockage JSON: journalise les emails de toutes les offres, même rejetées', () => {
   const jsonPath = makeJsonStore({ sourceChecks: [], radarRuns: [] })
   const db = { kind: 'json', path: jsonPath, data: { sourceChecks: [], radarRuns: [], offerEmails: [] } }
@@ -297,6 +344,41 @@ test('stockage JSON: journalise les emails de toutes les offres, même rejetées
 
   const stored = JSON.parse(fs.readFileSync(jsonPath, 'utf8'))
   assert.deepEqual(stored.offerEmails.map((row) => row.email).sort(), ['apply@example.fr', 'reject@example.fr'])
+})
+
+test('profil Léna: conserve IDF mais ignore salaire et télétravail, puis rejette expérimenté', () => {
+  const candidate = offer({
+    title: 'Conseiller funéraire H/F',
+    profilePseudo: 'léna',
+    location: 'Paris',
+    remote: 'présentiel obligatoire',
+    salaryMin: 1000,
+    level: '',
+  })
+  const evaluation = evaluateOffer(candidate, { ...baseConfig, salaire_min: 60000 })
+  const scoring = scoreOffer(candidate, evaluation, { ...baseConfig, salaire_min: 60000 })
+  const adjusted = applyProfileRules({ ...candidate, evaluation, ...scoring }, { ...baseConfig, salaire_min: 60000 })
+
+  assert.equal(adjusted.verdict, 'à candidater')
+  assert.equal(adjusted.evaluation.rejectReasons.includes('présentiel obligatoire'), false)
+  assert.equal(adjusted.evaluation.rejectReasons.includes('sous seuil rémunération'), false)
+
+  const experienced = applyProfileRules({
+    ...candidate,
+    title: 'Conseiller funéraire expérimenté H/F',
+    evaluation,
+    ...scoring,
+  }, baseConfig)
+  assert.equal(experienced.verdict, 'à rejeter')
+  assert.ok(experienced.evaluation.rejectReasons.includes('niveau trop expérimenté'))
+
+  const twoYears = applyProfileRules({
+    ...candidate,
+    level: '24 Mois',
+    evaluation,
+    ...scoring,
+  }, baseConfig)
+  assert.equal(twoYears.verdict, 'à rejeter')
 })
 
 test('stockage JSON: une écriture API ne supprime pas un run ajouté sur disque', () => {
@@ -1483,6 +1565,8 @@ test('profils candidats: choisit le profil selon le metier et respecte les exclu
 
     assert.equal(selectCandidateProfile(offer({ title: 'Business Analyst Assurance' }), profiles).pseudo, 'adri')
     assert.equal(selectCandidateProfile(offer({ title: 'Conseiller funéraire H/F', description: 'Pompes funèbres.' }), profiles).pseudo, 'léna')
+    assert.equal(selectCandidateProfile(offer({ title: 'Conseiller / Conseillère funéraire H/F' }), profiles).pseudo, 'léna')
+    assert.equal(selectCandidateProfile(offer({ title: 'Conseiller funéraire H/F', description: 'Un métier porteur de sens.' }), profiles).pseudo, 'léna')
     assert.equal(selectCandidateProfile(offer({ title: 'Maître de cérémonie funéraire H/F' }), profiles), null)
   })
 })

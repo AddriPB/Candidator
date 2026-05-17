@@ -19,7 +19,7 @@ export function selectCandidateProfile(offer, profiles = []) {
   const text = normalizeText([offer?.title, offer?.description].join(' '))
   const title = normalizeText(offer?.title)
   const eligible = profiles
-    .filter((profile) => !matchesAny(text, profile.excludedRoles))
+    .filter((profile) => !matchesAny(title, profile.excludedRoles))
     .map((profile) => ({
       profile,
       score: scoreProfile({ profile, title, text }),
@@ -98,10 +98,17 @@ function normalizeTemplate(template = {}) {
 function scoreProfile({ profile, title, text }) {
   let score = 0
   for (const term of profile.targetRoles) {
-    if (title.includes(term)) score += 10
-    else if (text.includes(term)) score += 3
+    if (matchesTargetTerm(title, term)) score += 10
+    else if (matchesTargetTerm(text, term)) score += 3
   }
   return score
+}
+
+function matchesTargetTerm(text, term) {
+  if (text.includes(term)) return true
+  if (term === 'conseiller funeraire') return /\bconseiller(?:\s+(?:conseillere|e))?(?:\s+\w+){0,2}\s+funeraire\b/.test(text)
+  if (term === 'assistant funeraire') return /\bassistant(?:e)?(?:\s+\w+){0,2}\s+funeraire\b/.test(text)
+  return false
 }
 
 function matchesAny(text, terms) {
