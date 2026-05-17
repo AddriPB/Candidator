@@ -84,7 +84,7 @@ app.get('/api/test/healthcheck', requireAuth, (req, res) => {
   const profiles = loadCandidateProfiles()
   const profilePseudo = reqProfilePseudo(req)
   const profile = profiles.find((item) => item.pseudo === profilePseudo)
-  const cv = getCvState({ pseudo: profilePseudo })
+  const cv = getCvState({ pseudo: profile?.pseudo || profilePseudo })
   const cvWithFallback = profile ? withProfileCvFallback(cv, profile) : cv
   const smtp = smtpHealth(profile)
   const stats = getOfferEmailStats(db)
@@ -154,7 +154,7 @@ app.get('/api/cv', requireAuth, (req, res) => {
   const profilePseudo = reqProfilePseudo(req)
   const profiles = loadCandidateProfiles()
   const profile = profiles.find((item) => item.pseudo === profilePseudo)
-  const cv = getCvState({ pseudo: profilePseudo })
+  const cv = getCvState({ pseudo: profile?.pseudo || profilePseudo })
   res.json(profile ? withProfileCvFallback(cv, profile) : cv)
 })
 
