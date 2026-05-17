@@ -1784,8 +1784,12 @@ function withCvEnv(fn) {
 function withProfilesEnv(fn, { missingFuneralCv = false } = {}) {
   const previous = {
     CANDIDATE_PROFILES_CONFIG: process.env.CANDIDATE_PROFILES_CONFIG,
+    CV_STORAGE_DIR: process.env.CV_STORAGE_DIR,
+    OPPORTUNITY_RADAR_PRIVATE_DIR: process.env.OPPORTUNITY_RADAR_PRIVATE_DIR,
   }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opportunity-radar-profiles-'))
+  process.env.CV_STORAGE_DIR = path.join(dir, 'cv')
+  delete process.env.OPPORTUNITY_RADAR_PRIVATE_DIR
   const adriCv = path.join(dir, 'CV-adri.pdf')
   const lenaCv = path.join(dir, 'CV-lena.pdf')
   fs.writeFileSync(adriCv, '%PDF-1.4 adri')
@@ -1818,8 +1822,10 @@ function withProfilesEnv(fn, { missingFuneralCv = false } = {}) {
   }, null, 2)}\n`)
   process.env.CANDIDATE_PROFILES_CONFIG = configPath
   const cleanup = () => {
-    if (previous.CANDIDATE_PROFILES_CONFIG === undefined) delete process.env.CANDIDATE_PROFILES_CONFIG
-    else process.env.CANDIDATE_PROFILES_CONFIG = previous.CANDIDATE_PROFILES_CONFIG
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
     fs.rmSync(dir, { recursive: true, force: true })
   }
   try {
